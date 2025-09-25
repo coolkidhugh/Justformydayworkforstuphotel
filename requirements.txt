@@ -1,6 +1,6 @@
-streamlit
-pandas
-Pillow
-openpyxl
 alibabacloud_ocr_api20210707
-alibabacloud_tea_openapi
+pandas
+streamlit
+pillow
+openpyxl
+streamlit-option-menu
