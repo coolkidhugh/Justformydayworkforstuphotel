@@ -64,11 +64,16 @@ def run_ocr_app():
             st.error("错误：阿里云 SDK 未安装。请确保 requirements.txt 文件配置正确。")
             return None
         
-        access_key_id = os.environ.get("ALIYUN_ACCESS_KEY_ID")
-        access_key_secret = os.environ.get("ALIYUN_ACCESS_KEY_SECRET")
+        # [关键更新] 从 st.secrets 读取凭证
+        if "aliyun_credentials" not in st.secrets:
+            st.error("错误：阿里云凭证未在 Streamlit Cloud 的 Secrets 中配置。")
+            return None
+        
+        access_key_id = st.secrets.aliyun_credentials.get("access_key_id")
+        access_key_secret = st.secrets.aliyun_credentials.get("access_key_secret")
 
         if not access_key_id or not access_key_secret:
-            st.error("错误：阿里云凭证未在 Render 的环境变量中配置。")
+            st.error("错误：阿里云 AccessKey ID 或 Secret 未在 Secrets 中正确配置。")
             return None
             
         try:
@@ -578,24 +583,25 @@ def process_data(uploaded_file):
     
     # [关键更新] 使用新的列名 '房类'
     df = df[df['房类'].isin(jinling_rooms + yatal_rooms)].copy()
-    df['楼层'] = df['房类'].apply(lambda x: room_to_building.get(str(x).strip().upper(), "其他楼"))
+    df['楼层'] = df['房类'].map(room_to_building).fillna("其他楼")
     
     df['入住天数'] = (df['离开'] - df['到达']).dt.days
     
     # 过滤掉入住天数小于等于0的异常数据
     df = df[df['入住天数'] > 0]
     
-    # [性能优化] 使用向量化操作代替循环来生成住店日期，速度提升百倍以上
-    # 1. 为每一行创建一个包含所有住店日期的列表
-    df['住店日列表'] = df.apply(
-        lambda row: pd.date_range(start=row['到达'], end=row['离开'] - pd.Timedelta(days=1), freq='D'),
-        axis=1
-    )
-    # 2. 使用 explode 将列表中的每个日期炸裂成独立的行
-    expanded_df = df.explode('住店日列表').rename(columns={'住店日列表': '住店日'})
+    # [终极性能优化] 使用 index.repeat 和 cumcount 实现纯向量化操作，速度达到极限
+    # 1. 根据“入住天数”重复每一行的索引
+    df_repeated = df.loc[df.index.repeat(df['入住天数'])]
+
+    # 2. 为每个原始分组计算日期偏移量 (0, 1, 2, ...)
+    date_offset = df_repeated.groupby(level=0).cumcount()
+
+    # 3. 通过“到达”日期加上偏移量，计算出每一天的“住店日”
+    df_repeated['住店日'] = df_repeated['到达'] + pd.to_timedelta(date_offset, unit='D')
     
-    # 3. 清理不再需要的列并重置索引
-    expanded_df = expanded_df.drop(columns=['到达', '离开', '入住天数']).reset_index(drop=True)
+    # 4. 清理不再需要的列并重置索引
+    expanded_df = df_repeated.drop(columns=['到达', '离开', '入住天数']).reset_index(drop=True)
     
     return df, expanded_df.copy()
 
@@ -773,8 +779,9 @@ def check_password():
             st.form_submit_button("登录", on_click=password_entered)
 
     def password_entered():
-        app_username = os.environ.get("APP_USERNAME")
-        app_password = os.environ.get("APP_PASSWORD")
+        # [关键更新] 从 st.secrets 读取凭证
+        app_username = st.secrets.app_credentials.get("username")
+        app_password = st.secrets.app_credentials.get("password")
         
         if st.session_state["username"] == app_username and st.session_state["password"] == app_password:
             st.session_state["password_correct"] = True
@@ -783,8 +790,9 @@ def check_password():
         else:
             st.session_state["password_correct"] = False
 
-    if not os.environ.get("APP_USERNAME") or not os.environ.get("APP_PASSWORD"):
-        st.error("错误：应用的用户名和密码未在 Render 的环境变量中正确配置。请参考指南操作。")
+    # [关键更新] 检查 st.secrets
+    if "app_credentials" not in st.secrets or not st.secrets.app_credentials.get("username") or not st.secrets.app_credentials.get("password"):
+        st.error("错误：应用的用户名或密码未在 Streamlit Secrets 中正确配置。")
         return False
 
     if st.session_state.get("password_correct", False):
@@ -799,20 +807,20 @@ def check_password():
 # --- 主应用路由器 ---
 st.set_page_config(layout="wide", page_title="炼狱金陵劳工必修剑谱")
 
-with st.sidebar:
-    app_choice = option_menu(
-        menu_title="炼狱金陵劳工必修剑谱",
-        options=["OCR 工具", "比对平台", "报告分析器", "数据分析"],
-        icons=["camera-reels", "columns-gap", "file-earmark-bar-graph", "bar-chart-line"],
-        menu_icon="tools",
-        default_index=3,
-    )
-
-st.sidebar.markdown("---")
-st.sidebar.info("这是一个将多个工具集成到一起的应用。")
-
 # [关键安全更新] 将密码检查移至全局，保护所有应用
 if check_password():
+    with st.sidebar:
+        app_choice = option_menu(
+            menu_title="炼狱金陵劳工必修剑谱",
+            options=["OCR 工具", "比对平台", "报告分析器", "数据分析"],
+            icons=["camera-reels", "columns-gap", "file-earmark-bar-graph", "bar-chart-line"],
+            menu_icon="tools",
+            default_index=3,
+        )
+
+    st.sidebar.markdown("---")
+    st.sidebar.info("这是一个将多个工具集成到一起的应用。")
+
     if app_choice == "OCR 工具":
         run_ocr_app()
     elif app_choice == "比对平台":
