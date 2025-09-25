@@ -1,6 +1,6 @@
 alibabacloud_ocr_api20210707
 pandas
-streamlit
+streamlit==1.33.0
 pillow
 openpyxl
-streamlit-option-menu
+streamlit-option-menu==0.3.6
