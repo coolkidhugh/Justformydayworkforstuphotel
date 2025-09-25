@@ -6,6 +6,7 @@ import io
 import json
 import unicodedata
 import os
+import traceback
 from datetime import timedelta
 # [关键更新] 导入新的侧边栏组件
 from streamlit_option_menu import option_menu
@@ -527,48 +528,32 @@ def process_data(uploaded_file):
     只有当上传的文件发生变化时，才会重新运行，大大提高性能。
     """
     df = pd.read_excel(uploaded_file)
-    
-    # [关键更新] 规范化列名，去除空格并转为大写
     df.columns = [str(col).strip().upper() for col in df.columns]
     
-    # [关键更新] 使用新的列名列表
-    # 注意: Excel中的列名必须与此列表中的名称完全对应
     required_cols = ['状态', '房类', '房数', '到达', '离开', '房价', '市场码']
-    
-    # 为了兼容性，将代码中的旧列名映射到新列名
     rename_map = {
-        'ROOM CATEGORY': '房类',
-        'ROOMS': '房数',
-        'ARRIVAL': '到达',
-        'DEPARTURE': '离开',
-        'RATE': '房价',
-        'MARKET': '市场码',
-        'STATUS': '状态'
+        'ROOM CATEGORY': '房类', 'ROOMS': '房数', 'ARRIVAL': '到达',
+        'DEPARTURE': '离开', 'RATE': '房价', 'MARKET': '市场码', 'STATUS': '状态'
     }
-    # 反向查找用户提供的中文名对应的潜在英文名
-    # 这增加了应用的兼容性，即使用户的Excel是英文表头也能用
-    user_cols_to_std = {v: k for k, v in rename_map.items()}
+    df.rename(columns=rename_map, inplace=True)
 
-    # 检查列是否存在
-    missing_cols = []
-    for col in required_cols:
-        # 如果中文名不存在，则尝试查找其对应的英文名
-        if col not in df.columns and user_cols_to_std.get(col) not in df.columns:
-            missing_cols.append(col)
-        # 如果找到了英文名，就把它重命名为中文名，方便后续处理
-        elif user_cols_to_std.get(col) in df.columns:
-            df.rename(columns={user_cols_to_std.get(col): col}, inplace=True)
-
+    missing_cols = [col for col in required_cols if col not in df.columns]
     if missing_cols:
         st.error(f"上传的文件缺少以下必要的列: {', '.join(missing_cols)}。请检查文件。")
         return None, None
     
-    # [关键修正] 移除 dayfirst=True，让 pandas 自动推断 YY/MM/DD 格式
-    df['到达'] = pd.to_datetime(df['到达'], errors='coerce')
-    df['离开'] = pd.to_datetime(df['离开'], errors='coerce')
+    # [终极修正] 使用 errors='coerce' 来强制转换，无法转换的值会变成 NaT/NaN
+    df['到达'] = pd.to_datetime(df['到达'], errors='coerce', dayfirst=True)
+    df['离开'] = pd.to_datetime(df['离开'], errors='coerce', dayfirst=True)
+    df['房价'] = pd.to_numeric(df['房价'], errors='coerce')
+    df['房数'] = pd.to_numeric(df['房数'], errors='coerce')
 
-    df.dropna(subset=['到达', '离开', '房价', '房数'], inplace=True)
+    # 在所有转换完成后，一次性删除任何包含空值的关键行
+    df.dropna(subset=['到达', '离开', '房价', '房数', '房类'], inplace=True)
     df = df[df['离开'] > df['到达']].copy()
+    
+    # 将房数转为整数，确保后续计算正确
+    df['房数'] = df['房数'].astype(int)
 
     jinling_rooms = [
         'DETN', 'DKN', 'DQN', 'DQS', 'DSKN', 'DSTN', 'DTN', 'EKN', 'EKS', 'ESN', 'ESS', 'ETN', 'ETS',
@@ -581,31 +566,19 @@ def process_data(uploaded_file):
     room_to_building = {code: "金陵楼" for code in jinling_rooms}
     room_to_building.update({code: "亚太楼" for code in yatal_rooms})
     
-    # [关键更新] 使用新的列名 '房类'
     df = df[df['房类'].isin(jinling_rooms + yatal_rooms)].copy()
-    # [性能优化] 使用 .map 代替 .apply，速度更快
     df['楼层'] = df['房类'].map(room_to_building)
     
     df['入住天数'] = (df['离开'] - df['到达']).dt.days
-    
-    # 过滤掉入住天数小于等于0或为空的异常数据
     df.dropna(subset=['入住天数'], inplace=True)
     df = df[df['入住天数'] > 0]
     
     if df.empty:
         return pd.DataFrame(), pd.DataFrame()
 
-    # [终极性能优化] 使用 index.repeat 和 cumcount 实现纯向量化操作，速度达到极限
-    # 1. 根据“入住天数”重复每一行的索引
     df_repeated = df.loc[df.index.repeat(df['入住天数'])]
-
-    # 2. 为每个原始分组计算日期偏移量 (0, 1, 2, ...)
     date_offset = df_repeated.groupby(level=0).cumcount()
-
-    # 3. 通过“到达”日期加上偏移量，计算出每一天的“住店日”
     df_repeated['住店日'] = df_repeated['到达'] + pd.to_timedelta(date_offset, unit='D')
-    
-    # 4. 清理不再需要的列并重置索引
     expanded_df = df_repeated.drop(columns=['到达', '离开', '入住天数']).reset_index(drop=True)
     
     return df, expanded_df.copy()
@@ -621,12 +594,10 @@ def run_data_analysis_app():
         st.info("请上传您的Excel文件以开始分析。")
         return
 
-    # [错误捕获] 使用 try-except 捕获所有潜在错误，并提供清晰的反馈
     try:
         original_df, expanded_df = process_data(uploaded_file)
         
         if original_df is None:
-            # process_data 内部已经显示了错误信息，这里直接退出
             return
             
         if original_df.empty:
@@ -635,18 +606,14 @@ def run_data_analysis_app():
             
         st.success(f"文件 '{uploaded_file.name}' 上传并处理成功！")
 
-        # --- 功能 1: 每日到店房数统计 ---
         st.header("1. 每日到店房数统计")
         with st.expander("点击展开或折叠"):
-            
-            # [鲁棒性] 增加对 original_df 是否为空的检查
             default_arrival_date = ""
             if not original_df.empty and '到达' in original_df.columns:
                 default_arrival_date = pd.to_datetime(original_df['到达'].min()).strftime('%Y/%m/%d')
 
             arrival_dates_str = st.text_input(
-                "输入到店日期 (用逗号分隔, 格式: YYYY/MM/DD)", 
-                default_arrival_date
+                "输入到店日期 (用逗号分隔, 格式: YYYY/MM/DD)", default_arrival_date
             )
             
             selected_arrival_dates = []
@@ -673,19 +640,13 @@ def run_data_analysis_app():
         
         st.markdown("---")
 
-        # --- 功能 2: 每日在住房间按价格分布矩阵 ---
         st.header("2. 每日在住房间按价格分布矩阵")
         with st.expander("点击展开或折叠", expanded=True):
-            
-            # [鲁棒性] 增加对 expanded_df 是否为空的检查
             default_stay_date = ""
             if not expanded_df.empty and '住店日' in expanded_df.columns:
                  default_stay_date = pd.to_datetime(expanded_df['住店日'].min()).strftime('%Y/%m/%d')
             
-            stay_dates_str = st.text_input(
-                "输入住店日期 (用逗号分隔, 格式: YYYY/MM/DD)",
-                default_stay_date
-            )
+            stay_dates_str = st.text_input("输入住店日期 (用逗号分隔, 格式: YYYY/MM/DD)", default_stay_date)
             
             selected_stay_dates = []
             if stay_dates_str:
@@ -697,16 +658,9 @@ def run_data_analysis_app():
                     st.stop()
 
             all_market_codes = sorted(original_df['市场码'].dropna().unique())
-            selected_market_codes = st.multiselect(
-                "选择市场码 (可多选)",
-                options=all_market_codes,
-                default=all_market_codes
-            )
+            selected_market_codes = st.multiselect("选择市场码 (可多选)", options=all_market_codes, default=all_market_codes)
             
-            price_bins_str = st.text_input(
-                "输入自定义价格区间 (例如: <400, 400-900, >900)",
-                "<400, 400-480, 481-500, 501-550, 551-699, >700"
-            )
+            price_bins_str = st.text_input("输入自定义价格区间 (例如: <400, 400-900, >900)", "<400, 400-480, 481-500, 501-550, 551-699, >700")
 
             try:
                 if not price_bins_str.strip():
@@ -718,10 +672,10 @@ def run_data_analysis_app():
                     item = item.strip()
                     if item.startswith('<'):
                         upper = int(re.search(r'\d+', item).group())
-                        intervals.append({'lower': float('-inf'), 'upper': upper, 'label': f'<{upper}'})
+                        intervals.append({'lower': float('-inf'), 'upper': upper, 'label': f'<{upper+1}'}) # Use < instead of <=
                     elif item.startswith('>'):
                         lower = int(re.search(r'\d+', item).group())
-                        intervals.append({'lower': lower, 'upper': float('inf'), 'label': f'>{lower}'})
+                        intervals.append({'lower': lower, 'upper': float('inf'), 'label': f'>{lower-1}'}) # Use > instead of >=
                     elif '-' in item:
                         parts = item.split('-')
                         lower, upper = int(parts[0]), int(parts[1])
@@ -734,11 +688,6 @@ def run_data_analysis_app():
 
                 intervals.sort(key=lambda x: x['lower'])
 
-                for i in range(len(intervals) - 1):
-                    if intervals[i]['upper'] >= intervals[i+1]['lower']:
-                        st.error(f"价格区间重叠或接触: '{intervals[i]['label']}' 和 '{intervals[i+1]['label']}'")
-                        st.stop()
-                
                 bins = [d['lower'] for d in intervals] + [intervals[-1]['upper']]
                 labels = [d['label'] for d in intervals]
 
@@ -753,8 +702,9 @@ def run_data_analysis_app():
                 ].copy()
 
                 if not matrix_df.empty:
+                    # [逻辑修正] right=True 确保 400-500 区间包含 500
                     matrix_df['价格区间'] = pd.cut(
-                        matrix_df['房价'], bins=bins, labels=labels, right=False, include_lowest=True
+                        matrix_df['房价'], bins=bins, labels=labels, right=True, include_lowest=True
                     )
                     
                     buildings = sorted(matrix_df['楼层'].unique())
@@ -791,8 +741,6 @@ def run_data_analysis_app():
 # ==============================================================================
 # --- 全局函数和主应用路由器 ---
 # ==============================================================================
-import traceback
-
 # --- 登录检查函数 (全局) ---
 def check_password():
     """返回 True 如果用户已登录, 否则返回 False."""
@@ -853,5 +801,4 @@ if check_password():
         run_analyzer_app()
     elif app_choice == "数据分析":
         run_data_analysis_app()
-"
 
