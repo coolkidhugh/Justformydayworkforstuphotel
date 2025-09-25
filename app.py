@@ -67,8 +67,11 @@ def run_ocr_app():
                 st.form_submit_button("登录", on_click=password_entered)
 
         def password_entered():
+            # [关键]：这里从st.secrets读取你在Render环境变量中设置的用户名和密码
+            # st.secrets['app_credentials']['username']
             app_username = st.secrets.get("app_credentials", {}).get("username")
             app_password = st.secrets.get("app_credentials", {}).get("password")
+            
             if st.session_state["username"] == app_username and st.session_state["password"] == app_password:
                 st.session_state["password_correct"] = True
                 del st.session_state["password"]
@@ -76,8 +79,9 @@ def run_ocr_app():
             else:
                 st.session_state["password_correct"] = False
 
+        # [关键]：检查你在Render环境变量中是否配置了凭证
         if not st.secrets.get("app_credentials", {}).get("username") or not st.secrets.get("app_credentials", {}).get("password"):
-            st.error("错误：应用用户名和密码未在 Streamlit Secrets 中配置。")
+            st.error("错误：应用的用户名和密码未在 Render 的环境变量中正确配置。")
             return False
 
         if st.session_state.get("password_correct", False):
@@ -93,8 +97,9 @@ def run_ocr_app():
         if not ALIYUN_SDK_AVAILABLE:
             st.error("错误：阿里云 SDK 未安装。请确保 requirements.txt 文件配置正确。")
             return None
+        # [关键]：同样，阿里云的凭证也需要配置在Render的环境变量中
         if "aliyun_credentials" not in st.secrets:
-            st.error("错误：阿里云凭证未在 Streamlit Cloud 的 Secrets 中配置。")
+            st.error("错误：阿里云凭证未在 Render 的环境变量中配置。")
             return None
         try:
             creds = st.secrets["aliyun_credentials"]
