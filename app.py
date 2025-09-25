@@ -542,11 +542,16 @@ def process_data(uploaded_file):
         st.error(f"上传的文件缺少以下必要的列: {', '.join(missing_cols)}。请检查文件。")
         return None, None
     
-    # [终极修正] 不再使用 dayfirst=True，让 pandas 自动推断 YY/MM/DD 格式
-    df['到达'] = pd.to_datetime(df['到达'], errors='coerce')
-    df['离开'] = pd.to_datetime(df['离开'], errors='coerce')
+    # [终极修正] 先统一转为字符串，再分离日期部分，最后用指定格式解析
+    df['到达_str'] = df['到达'].astype(str).str.split(' ').str[0]
+    df['离开_str'] = df['离开'].astype(str).str.split(' ').str[0]
+    df['到达'] = pd.to_datetime(df['到达_str'], format='%y/%m/%d', errors='coerce')
+    df['离开'] = pd.to_datetime(df['离开_str'], format='%y/%m/%d', errors='coerce')
+    
+    # [终极修正] 对所有关键列进行强制类型转换和清洗
     df['房价'] = pd.to_numeric(df['房价'], errors='coerce')
     df['房数'] = pd.to_numeric(df['房数'], errors='coerce')
+    df['市场码'] = df['市场码'].astype(str)
 
     # 在所有转换完成后，一次性删除任何包含空值的关键行
     df.dropna(subset=['到达', '离开', '房价', '房数', '房类'], inplace=True)
