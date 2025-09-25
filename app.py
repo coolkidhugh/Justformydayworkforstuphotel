@@ -406,13 +406,13 @@ def run_comparison_app():
                 stat_cols[2].metric(f"仅 '{st.session_state.df2_name}' 有", only_2_count)
 
                 st.subheader("人员名单详情")
-                with st.expander(f"查看 {matched_count} 条信息完全一致の名单"):
+                with st.expander(f"查看 {matched_count} 条信息完全一致的名单"): # [界面修正] 移除符号
                     if not st.session_state.matched_df.empty:
                         st.dataframe(st.session_state.matched_df[['name']].rename(columns={'name': '姓名'}))
                     else:
                         st.write("没有信息完全一致的人员。")
 
-                with st.expander(f"查看 {only_1_count} 条仅存在于 '{st.session_state.df1_name}' の名单"):
+                with st.expander(f"查看 {only_1_count} 条仅存在于 '{st.session_state.df1_name}' 的名单"): # [界面修正] 移除符号
                     if not st.session_state.in_file1_only.empty:
                         display_cols_1 = ['name'] + [c for c in cols_to_map if f"{c}_1" in st.session_state.in_file1_only.columns]
                         display_df_1 = st.session_state.in_file1_only[[f"{c}_1" if c != 'name' else 'name' for c in display_cols_1]]
@@ -421,7 +421,7 @@ def run_comparison_app():
                     else:
                         st.write("没有人员。")
 
-                with st.expander(f"查看 {only_2_count} 条仅存在于 '{st.session_state.df2_name}' の名单"):
+                with st.expander(f"查看 {only_2_count} 条仅存在于 '{st.session_state.df2_name}' 的名单"): # [界面修正] 移除符号
                     if not st.session_state.in_file2_only.empty:
                         display_cols_2 = ['name'] + [c for c in cols_to_map if f"{c}_2" in st.session_state.in_file2_only.columns]
                         display_df_2 = st.session_state.in_file2_only[[f"{c}_2" if c != 'name' else 'name' for c in display_cols_2]]
@@ -542,9 +542,9 @@ def process_data(uploaded_file):
         st.error(f"上传的文件缺少以下必要的列: {', '.join(missing_cols)}。请检查文件。")
         return None, None
     
-    # [终极修正] 使用 errors='coerce' 来强制转换，无法转换的值会变成 NaT/NaN
-    df['到达'] = pd.to_datetime(df['到达'], errors='coerce', dayfirst=True)
-    df['离开'] = pd.to_datetime(df['离开'], errors='coerce', dayfirst=True)
+    # [终极修正] 不再使用 dayfirst=True，让 pandas 自动推断 YY/MM/DD 格式
+    df['到达'] = pd.to_datetime(df['到达'], errors='coerce')
+    df['离开'] = pd.to_datetime(df['离开'], errors='coerce')
     df['房价'] = pd.to_numeric(df['房价'], errors='coerce')
     df['房数'] = pd.to_numeric(df['房数'], errors='coerce')
 
@@ -569,7 +569,9 @@ def process_data(uploaded_file):
     df = df[df['房类'].isin(jinling_rooms + yatal_rooms)].copy()
     df['楼层'] = df['房类'].map(room_to_building)
     
-    df['入住天数'] = (df['离开'] - df['到达']).dt.days
+    # [关键修正] 使用 normalize() 来精确计算入住天数（午夜之差）
+    df['入住天数'] = (df['离开'].dt.normalize() - df['到达'].dt.normalize()).dt.days
+    
     df.dropna(subset=['入住天数'], inplace=True)
     df = df[df['入住天数'] > 0]
     
@@ -578,7 +580,7 @@ def process_data(uploaded_file):
 
     df_repeated = df.loc[df.index.repeat(df['入住天数'])]
     date_offset = df_repeated.groupby(level=0).cumcount()
-    df_repeated['住店日'] = df_repeated['到达'] + pd.to_timedelta(date_offset, unit='D')
+    df_repeated['住店日'] = df_repeated['到达'].dt.normalize() + pd.to_timedelta(date_offset, unit='D')
     expanded_df = df_repeated.drop(columns=['到达', '离开', '入住天数']).reset_index(drop=True)
     
     return df, expanded_df.copy()
@@ -709,7 +711,7 @@ def run_data_analysis_app():
                     
                     buildings = sorted(matrix_df['楼层'].unique())
                     for building in buildings:
-                        st.subheader(f"📍 {building} - 在住房间分布")
+                        st.subheader(f"{building} - 在住房间分布") # [界面修正] 移除符号
                         building_df = matrix_df[matrix_df['楼层'] == building]
                         
                         if not building_df.empty:
@@ -772,7 +774,7 @@ def check_password():
 
     login_form()
     if "password_correct" in st.session_state and not st.session_state.password_correct:
-        st.error("😕 用户名或密码不正确。")
+        st.error("用户名或密码不正确。") # [界面修正] 移除符号
     return False
 
 
