@@ -173,60 +173,59 @@ def run_ocr_app():
 
     # --- Streamlit 主应用 ---
     st.title("炼狱金陵劳工必修剑谱 - OCR 工具")
+    
+    st.markdown("""
+    **全新工作流**：
+    1.  **上传图片，点击提取**：程序将调用阿里云 OCR 并将**原始识别文本**显示在下方。
+    2.  **自动填充与人工修正**：程序会尝试自动填充结构化信息。您可以**参照原始文本**，直接在表格中修改，确保信息完全准确。
+    3.  **生成话术**：确认无误后，生成最终话术。
+    """)
 
-    if check_password():
-        st.markdown("""
-        **全新工作流**：
-        1.  **上传图片，点击提取**：程序将调用阿里云 OCR 并将**原始识别文本**显示在下方。
-        2.  **自动填充与人工修正**：程序会尝试自动填充结构化信息。您可以**参照原始文本**，直接在表格中修改，确保信息完全准确。
-        3.  **生成话术**：确认无误后，生成最终话术。
-        """)
+    uploaded_file = st.file_uploader("上传图片文件", type=["png", "jpg", "jpeg", "bmp"], key="ocr_uploader")
 
-        uploaded_file = st.file_uploader("上传图片文件", type=["png", "jpg", "jpeg", "bmp"], key="ocr_uploader")
+    if uploaded_file is not None:
+        image = Image.open(uploaded_file)
+        st.image(image, caption="上传的图片", width=300)
 
-        if uploaded_file is not None:
-            image = Image.open(uploaded_file)
-            st.image(image, caption="上传的图片", width=300)
+        if st.button("从图片提取信息 (阿里云 OCR)"):
+            for key in ['raw_ocr_text', 'booking_info']:
+                if key in st.session_state:
+                    del st.session_state[key]
+            
+            with st.spinner('正在调用阿里云 OCR API 识别中...'):
+                ocr_text = get_ocr_text_from_aliyun(image)
+                if ocr_text:
+                    st.session_state['raw_ocr_text'] = ocr_text
+                    result = extract_booking_info(ocr_text)
+                    if isinstance(result, str):
+                        st.warning(f"自动解析提示：{result}")
+                        st.info("请参考下方识别出的原始文本，手动填写信息。")
+                        empty_df = pd.DataFrame(columns=['房型', '房数', '定价'])
+                        st.session_state['booking_info'] = { "team_name": "", "team_type": DEFAULT_TEAM_TYPE, "arrival_date": "", "departure_date": "", "room_dataframe": empty_df }
+                    else:
+                        st.session_state['booking_info'] = result
+                        st.success("信息提取成功！请在下方核对并编辑。")
 
-            if st.button("从图片提取信息 (阿里云 OCR)"):
-                for key in ['raw_ocr_text', 'booking_info']:
-                    if key in st.session_state:
-                        del st.session_state[key]
-                
-                with st.spinner('正在调用阿里云 OCR API 识别中...'):
-                    ocr_text = get_ocr_text_from_aliyun(image)
-                    if ocr_text:
-                        st.session_state['raw_ocr_text'] = ocr_text
-                        result = extract_booking_info(ocr_text)
-                        if isinstance(result, str):
-                            st.warning(f"自动解析提示：{result}")
-                            st.info("请参考下方识别出的原始文本，手动填写信息。")
-                            empty_df = pd.DataFrame(columns=['房型', '房数', '定价'])
-                            st.session_state['booking_info'] = { "team_name": "", "team_type": DEFAULT_TEAM_TYPE, "arrival_date": "", "departure_date": "", "room_dataframe": empty_df }
-                        else:
-                            st.session_state['booking_info'] = result
-                            st.success("信息提取成功！请在下方核对并编辑。")
-
-        if 'booking_info' in st.session_state:
-            info = st.session_state['booking_info']
-            if 'raw_ocr_text' in st.session_state:
-                st.markdown("---")
-                st.subheader("原始识别结果 (供参考)")
-                st.text_area("您可以从这里复制内容来修正下面的表格", st.session_state['raw_ocr_text'], height=200)
+    if 'booking_info' in st.session_state:
+        info = st.session_state['booking_info']
+        if 'raw_ocr_text' in st.session_state:
             st.markdown("---")
-            st.subheader("核对与编辑信息")
-            col1, col2, col3, col4 = st.columns(4)
-            with col1: info['team_name'] = st.text_input("团队名称", value=info['team_name'])
-            with col2: info['team_type'] = st.selectbox("团队类型", options=list(TEAM_TYPE_MAP.values()) + [DEFAULT_TEAM_TYPE], index=(list(TEAM_TYPE_MAP.values()) + [DEFAULT_TEAM_TYPE]).index(info['team_type']))
-            with col3: arrival = st.text_input("到达日期", value=info['arrival_date'])
-            with col4: departure = st.text_input("离开日期", value=info['departure_date'])
-            st.markdown("##### 房间详情 (可直接在表格中编辑)")
-            edited_df = st.data_editor(info['room_dataframe'], num_rows="dynamic", use_container_width=True)
-            if st.button("生成最终话术"):
-                final_speech = format_notification_speech(info['team_name'], info['team_type'], arrival, departure, edited_df)
-                st.subheader("生成成功！")
-                st.success(final_speech)
-                st.code(final_speech, language=None)
+            st.subheader("原始识别结果 (供参考)")
+            st.text_area("您可以从这里复制内容来修正下面的表格", st.session_state['raw_ocr_text'], height=200)
+        st.markdown("---")
+        st.subheader("核对与编辑信息")
+        col1, col2, col3, col4 = st.columns(4)
+        with col1: info['team_name'] = st.text_input("团队名称", value=info['team_name'])
+        with col2: info['team_type'] = st.selectbox("团队类型", options=list(TEAM_TYPE_MAP.values()) + [DEFAULT_TEAM_TYPE], index=(list(TEAM_TYPE_MAP.values()) + [DEFAULT_TEAM_TYPE]).index(info['team_type']))
+        with col3: arrival = st.text_input("到达日期", value=info['arrival_date'])
+        with col4: departure = st.text_input("离开日期", value=info['departure_date'])
+        st.markdown("##### 房间详情 (可直接在表格中编辑)")
+        edited_df = st.data_editor(info['room_dataframe'], num_rows="dynamic", use_container_width=True)
+        if st.button("生成最终话术"):
+            final_speech = format_notification_speech(info['team_name'], info['team_type'], arrival, departure, edited_df)
+            st.subheader("生成成功！")
+            st.success(final_speech)
+            st.code(final_speech, language=None)
 
 # ==============================================================================
 # --- APP 2: 多维审核比对平台 ---
@@ -812,12 +811,14 @@ with st.sidebar:
 st.sidebar.markdown("---")
 st.sidebar.info("这是一个将多个工具集成到一起的应用。")
 
-if app_choice == "OCR 工具":
-    run_ocr_app()
-elif app_choice == "比对平台":
-    run_comparison_app()
-elif app_choice == "报告分析器":
-    run_analyzer_app()
-elif app_choice == "数据分析":
-    run_data_analysis_app()
+# [关键安全更新] 将密码检查移至全局，保护所有应用
+if check_password():
+    if app_choice == "OCR 工具":
+        run_ocr_app()
+    elif app_choice == "比对平台":
+        run_comparison_app()
+    elif app_choice == "报告分析器":
+        run_analyzer_app()
+    elif app_choice == "数据分析":
+        run_data_analysis_app()
 
