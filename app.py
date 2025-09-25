@@ -583,13 +583,18 @@ def process_data(uploaded_file):
     
     # [关键更新] 使用新的列名 '房类'
     df = df[df['房类'].isin(jinling_rooms + yatal_rooms)].copy()
-    df['楼层'] = df['房类'].map(room_to_building).fillna("其他楼")
+    # [性能优化] 使用 .map 代替 .apply，速度更快
+    df['楼层'] = df['房类'].map(room_to_building)
     
     df['入住天数'] = (df['离开'] - df['到达']).dt.days
     
-    # 过滤掉入住天数小于等于0的异常数据
+    # 过滤掉入住天数小于等于0或为空的异常数据
+    df.dropna(subset=['入住天数'], inplace=True)
     df = df[df['入住天数'] > 0]
     
+    if df.empty:
+        return pd.DataFrame(), pd.DataFrame()
+
     # [终极性能优化] 使用 index.repeat 和 cumcount 实现纯向量化操作，速度达到极限
     # 1. 根据“入住天数”重复每一行的索引
     df_repeated = df.loc[df.index.repeat(df['入住天数'])]
@@ -616,158 +621,177 @@ def run_data_analysis_app():
         st.info("请上传您的Excel文件以开始分析。")
         return
 
-    original_df, expanded_df = process_data(uploaded_file)
-    
-    if original_df is None:
-        return
+    # [错误捕获] 使用 try-except 捕获所有潜在错误，并提供清晰的反馈
+    try:
+        original_df, expanded_df = process_data(uploaded_file)
         
-    st.success(f"文件 '{uploaded_file.name}' 上传并处理成功！")
-
-    # --- 功能 1: 每日到店房数统计 ---
-    st.header("1. 每日到店房数统计")
-    with st.expander("点击展开或折叠"):
-        
-        # [关键更新] 改为手动输入日期
-        arrival_dates_str = st.text_input(
-            "输入到店日期 (用逗号分隔, 格式: YYYY/MM/DD)", 
-            pd.to_datetime(original_df['到达'].min()).strftime('%Y/%m/%d') if not original_df.empty else ""
-        )
-        
-        selected_arrival_dates = []
-        if arrival_dates_str:
-            try:
-                date_strings = [d.strip() for d in arrival_dates_str.split(',')]
-                selected_arrival_dates = [pd.to_datetime(d, format='%Y/%m/%d').date() for d in date_strings]
-            except ValueError:
-                st.error("到店日期格式不正确，请输入 YYYY/MM/DD 格式，并用逗号分隔。")
-                st.stop()
-
-        if selected_arrival_dates:
-            arrival_df = original_df[
-                (original_df['状态'] == 'R') & 
-                (original_df['到达'].dt.date.isin(selected_arrival_dates))
-            ].copy()
-
-            if not arrival_df.empty:
-                arrival_summary = arrival_df.groupby([arrival_df['到达'].dt.date, '楼层'])['房数'].sum().unstack(fill_value=0)
-                arrival_summary.index.name = "到店日期"
-                st.dataframe(arrival_summary)
-            else:
-                st.warning(f"在所选日期内没有找到状态为 'R' 的到店记录。")
-    
-    st.markdown("---")
-
-    # --- 功能 2: 每日在住房间按价格分布矩阵 ---
-    st.header("2. 每日在住房间按价格分布矩阵")
-    with st.expander("点击展开或折叠", expanded=True):
-        
-        # [关键更新] 改为手动输入日期
-        default_stay_date = pd.to_datetime(expanded_df['住店日'].min()).strftime('%Y/%m/%d') if not expanded_df.empty else ""
-        stay_dates_str = st.text_input(
-            "输入住店日期 (用逗号分隔, 格式: YYYY/MM/DD)",
-            default_stay_date
-        )
-        
-        selected_stay_dates = []
-        if stay_dates_str:
-            try:
-                stay_date_strings = [d.strip() for d in stay_dates_str.split(',')]
-                selected_stay_dates = [pd.to_datetime(d, format='%Y/%m/%d').date() for d in stay_date_strings]
-            except ValueError:
-                st.error("住店日期格式不正确，请输入 YYYY/MM/DD 格式，并用逗号分隔。")
-                st.stop()
-
-        all_market_codes = sorted(original_df['市场码'].dropna().unique())
-        selected_market_codes = st.multiselect(
-            "选择市场码 (可多选)",
-            options=all_market_codes,
-            default=all_market_codes
-        )
-        
-        price_bins_str = st.text_input(
-            "输入自定义价格区间 (例如: <400, 400-900, >900)",
-            "<400, 400-480, 481-500, 501-550, 551-699, >700"
-        )
-
-        try:
-            if not price_bins_str.strip():
-                st.warning("请输入价格区间。")
-                st.stop()
-
-            intervals = []
-            for item in price_bins_str.split(','):
-                item = item.strip()
-                if item.startswith('<'):
-                    upper = int(item[1:])
-                    intervals.append({'lower': float('-inf'), 'upper': upper, 'label': f'<{upper}'})
-                elif item.startswith('>'):
-                    lower = int(item[1:])
-                    intervals.append({'lower': lower, 'upper': float('inf'), 'label': f'>{lower}'})
-                elif '-' in item:
-                    parts = item.split('-')
-                    lower, upper = int(parts[0]), int(parts[1])
-                    if lower >= upper:
-                        st.error(f"价格区间 '{item}' 无效：下限必须小于上限。")
-                        st.stop()
-                    intervals.append({'lower': lower, 'upper': upper, 'label': f'{lower}-{upper}'})
-                else:
-                    raise ValueError(f"无法解析区间 '{item}'")
-
-            intervals.sort(key=lambda x: x['lower'])
-
-            for i in range(len(intervals) - 1):
-                if intervals[i]['upper'] > intervals[i+1]['lower']:
-                    st.error(f"价格区间重叠: '{intervals[i]['label']}' 和 '{intervals[i+1]['label']}'")
-                    st.stop()
+        if original_df is None:
+            # process_data 内部已经显示了错误信息，这里直接退出
+            return
             
-            bins = [d['lower'] for d in intervals] + [intervals[-1]['upper']]
-            labels = [d['label'] for d in intervals]
+        if original_df.empty:
+            st.warning("上传的文件中没有找到有效的数据记录，请检查文件内容和格式。")
+            return
+            
+        st.success(f"文件 '{uploaded_file.name}' 上传并处理成功！")
 
-        except (ValueError, IndexError) as e:
-            st.error(f"价格区间格式不正确。请使用 '<X', '>Y', 'A-B' 格式，并用逗号分隔。错误: {e}")
-            st.stop()
+        # --- 功能 1: 每日到店房数统计 ---
+        st.header("1. 每日到店房数统计")
+        with st.expander("点击展开或折叠"):
+            
+            # [鲁棒性] 增加对 original_df 是否为空的检查
+            default_arrival_date = ""
+            if not original_df.empty and '到达' in original_df.columns:
+                default_arrival_date = pd.to_datetime(original_df['到达'].min()).strftime('%Y/%m/%d')
 
-        if selected_stay_dates and selected_market_codes:
-            matrix_df = expanded_df[
-                (expanded_df['住店日'].dt.date.isin(selected_stay_dates)) &
-                (expanded_df['市场码'].isin(selected_market_codes))
-            ].copy()
+            arrival_dates_str = st.text_input(
+                "输入到店日期 (用逗号分隔, 格式: YYYY/MM/DD)", 
+                default_arrival_date
+            )
+            
+            selected_arrival_dates = []
+            if arrival_dates_str:
+                try:
+                    date_strings = [d.strip() for d in arrival_dates_str.split(',') if d.strip()]
+                    selected_arrival_dates = [pd.to_datetime(d, format='%Y/%m/%d').date() for d in date_strings]
+                except ValueError:
+                    st.error("到店日期格式不正确，请输入 YYYY/MM/DD 格式，并用逗号分隔。")
+                    st.stop()
 
-            if not matrix_df.empty:
-                matrix_df['价格区间'] = pd.cut(
-                    matrix_df['房价'], bins=bins, labels=labels, right=True, include_lowest=True
-                )
-                
-                # [关键更新] 按楼层分开显示
-                buildings = sorted(matrix_df['楼层'].unique())
-                for building in buildings:
-                    st.subheader(f"📍 {building} - 在住房间分布")
-                    building_df = matrix_df[matrix_df['楼层'] == building]
-                    
-                    if not building_df.empty:
-                        # [关键更新] 使用 '房数' 列进行求和
-                        pivot_table = pd.pivot_table(
-                            building_df.dropna(subset=['价格区间']),
-                            index=building_df['住店日'].dt.date,
-                            columns='价格区间',
-                            values='房数', # 使用房数作为值
-                            aggfunc='sum',   # 对房数进行求和
-                            fill_value=0
-                        )
-                        
-                        if not pivot_table.empty:
-                            pivot_table['每日总计'] = pivot_table.sum(axis=1)
-                            st.dataframe(pivot_table.sort_index())
-                        else:
-                             st.info(f"在 {building} 中，所选条件下的所有房价都不在您定义的价格区间内。")
+            if selected_arrival_dates:
+                arrival_df = original_df[
+                    (original_df['状态'] == 'R') & 
+                    (original_df['到达'].dt.date.isin(selected_arrival_dates))
+                ].copy()
+
+                if not arrival_df.empty:
+                    arrival_summary = arrival_df.groupby([arrival_df['到达'].dt.date, '楼层'])['房数'].sum().unstack(fill_value=0)
+                    arrival_summary.index.name = "到店日期"
+                    st.dataframe(arrival_summary)
+                else:
+                    st.warning(f"在所选日期内没有找到状态为 'R' 的到店记录。")
+        
+        st.markdown("---")
+
+        # --- 功能 2: 每日在住房间按价格分布矩阵 ---
+        st.header("2. 每日在住房间按价格分布矩阵")
+        with st.expander("点击展开或折叠", expanded=True):
+            
+            # [鲁棒性] 增加对 expanded_df 是否为空的检查
+            default_stay_date = ""
+            if not expanded_df.empty and '住店日' in expanded_df.columns:
+                 default_stay_date = pd.to_datetime(expanded_df['住店日'].min()).strftime('%Y/%m/%d')
+            
+            stay_dates_str = st.text_input(
+                "输入住店日期 (用逗号分隔, 格式: YYYY/MM/DD)",
+                default_stay_date
+            )
+            
+            selected_stay_dates = []
+            if stay_dates_str:
+                try:
+                    stay_date_strings = [d.strip() for d in stay_dates_str.split(',') if d.strip()]
+                    selected_stay_dates = [pd.to_datetime(d, format='%Y/%m/%d').date() for d in stay_date_strings]
+                except ValueError:
+                    st.error("住店日期格式不正确，请输入 YYYY/MM/DD 格式，并用逗号分隔。")
+                    st.stop()
+
+            all_market_codes = sorted(original_df['市场码'].dropna().unique())
+            selected_market_codes = st.multiselect(
+                "选择市场码 (可多选)",
+                options=all_market_codes,
+                default=all_market_codes
+            )
+            
+            price_bins_str = st.text_input(
+                "输入自定义价格区间 (例如: <400, 400-900, >900)",
+                "<400, 400-480, 481-500, 501-550, 551-699, >700"
+            )
+
+            try:
+                if not price_bins_str.strip():
+                    st.warning("请输入价格区间。")
+                    st.stop()
+
+                intervals = []
+                for item in price_bins_str.split(','):
+                    item = item.strip()
+                    if item.startswith('<'):
+                        upper = int(re.search(r'\d+', item).group())
+                        intervals.append({'lower': float('-inf'), 'upper': upper, 'label': f'<{upper}'})
+                    elif item.startswith('>'):
+                        lower = int(re.search(r'\d+', item).group())
+                        intervals.append({'lower': lower, 'upper': float('inf'), 'label': f'>{lower}'})
+                    elif '-' in item:
+                        parts = item.split('-')
+                        lower, upper = int(parts[0]), int(parts[1])
+                        if lower >= upper:
+                            st.error(f"价格区间 '{item}' 无效：下限必须小于上限。")
+                            st.stop()
+                        intervals.append({'lower': lower, 'upper': upper, 'label': f'{lower}-{upper}'})
                     else:
-                        st.info(f"在 {building} 中，没有找到符合所选条件的在住记录。")
-            else:
-                st.warning(f"在所选日期和市场码范围内没有找到在住记录。")
+                        raise ValueError(f"无法解析区间 '{item}'")
+
+                intervals.sort(key=lambda x: x['lower'])
+
+                for i in range(len(intervals) - 1):
+                    if intervals[i]['upper'] >= intervals[i+1]['lower']:
+                        st.error(f"价格区间重叠或接触: '{intervals[i]['label']}' 和 '{intervals[i+1]['label']}'")
+                        st.stop()
+                
+                bins = [d['lower'] for d in intervals] + [intervals[-1]['upper']]
+                labels = [d['label'] for d in intervals]
+
+            except (ValueError, IndexError, AttributeError) as e:
+                st.error(f"价格区间格式不正确。请使用 '<X', '>Y', 'A-B' 格式，并用逗号分隔。错误: {e}")
+                st.stop()
+
+            if selected_stay_dates and selected_market_codes:
+                matrix_df = expanded_df[
+                    (expanded_df['住店日'].dt.date.isin(selected_stay_dates)) &
+                    (expanded_df['市场码'].isin(selected_market_codes))
+                ].copy()
+
+                if not matrix_df.empty:
+                    matrix_df['价格区间'] = pd.cut(
+                        matrix_df['房价'], bins=bins, labels=labels, right=False, include_lowest=True
+                    )
+                    
+                    buildings = sorted(matrix_df['楼层'].unique())
+                    for building in buildings:
+                        st.subheader(f"📍 {building} - 在住房间分布")
+                        building_df = matrix_df[matrix_df['楼层'] == building]
+                        
+                        if not building_df.empty:
+                            pivot_table = pd.pivot_table(
+                                building_df.dropna(subset=['价格区间']),
+                                index=building_df['住店日'].dt.date,
+                                columns='价格区间',
+                                values='房数',
+                                aggfunc='sum',
+                                fill_value=0
+                            )
+                            
+                            if not pivot_table.empty:
+                                pivot_table['每日总计'] = pivot_table.sum(axis=1)
+                                st.dataframe(pivot_table.sort_index())
+                            else:
+                                 st.info(f"在 {building} 中，所选条件下的所有房价都不在您定义的价格区间内。")
+                        else:
+                            st.info(f"在 {building} 中，没有找到符合所选条件的在住记录。")
+                else:
+                    st.warning(f"在所选日期和市场码范围内没有找到在住记录。")
+
+    except Exception as e:
+        st.error(f"处理数据或生成报告时发生意外错误。请检查您的Excel文件格式是否正确。")
+        st.error(f"技术细节: {e}")
+        st.code(f"Traceback: {traceback.format_exc()}")
+
 
 # ==============================================================================
 # --- 全局函数和主应用路由器 ---
 # ==============================================================================
+import traceback
 
 # --- 登录检查函数 (全局) ---
 def check_password():
