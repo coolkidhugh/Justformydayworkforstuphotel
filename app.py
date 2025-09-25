@@ -586,9 +586,17 @@ def process_data(uploaded_file):
     # 过滤掉入住天数小于等于0的异常数据
     df = df[df['入住天数'] > 0]
     
-    expanded_df = df.loc[df.index.repeat(df['房数'])].copy() # [关键更新] 按房数展开
-    expanded_df['住店日'] = expanded_df['到达'] + pd.to_timedelta(expanded_df.groupby(level=0).cumcount(), unit='D')
-    expanded_df.reset_index(drop=True, inplace=True)
+    # [性能优化] 创建一个包含所有住店日的 "长" DataFrame，避免在后续操作中循环
+    # 这一步是性能的关键
+    date_ranges = [pd.date_range(row['到达'], row['离开'] - pd.Timedelta(days=1), freq='D') for index, row in df.iterrows()]
+    df_dates = pd.DataFrame({
+        'original_index': df.index.repeat([len(dr) for dr in date_ranges]),
+        '住店日': [d for dr in date_ranges for d in dr]
+    })
+    
+    # 合并原始数据和展开的日期
+    # 使用 original_index 作为 key 来合并
+    expanded_df = pd.merge(df.drop(columns=['到达', '离开']), df_dates, left_index=True, right_on='original_index').reset_index(drop=True)
     
     return df, expanded_df.copy()
 
@@ -613,16 +621,21 @@ def run_data_analysis_app():
     # --- 功能 1: 每日到店房数统计 ---
     st.header("1. 每日到店房数统计")
     with st.expander("点击展开或折叠"):
-        all_arrival_dates = sorted(original_df['到达'].dt.date.unique())
         
-        # [关键更新] 改为多选，最多3个
-        selected_arrival_dates = st.multiselect(
-            "选择到店日期 (最多3个)",
-            options=all_arrival_dates,
-            default=all_arrival_dates[:1], # 默认选中第一个
-            max_selections=3,
-            key='arrival_date_multiselect'
+        # [关键更新] 改为手动输入日期
+        arrival_dates_str = st.text_input(
+            "输入到店日期 (用逗号分隔, 格式: YYYY/MM/DD)", 
+            pd.to_datetime(original_df['到达'].min()).strftime('%Y/%m/%d') if not original_df.empty else ""
         )
+        
+        selected_arrival_dates = []
+        if arrival_dates_str:
+            try:
+                date_strings = [d.strip() for d in arrival_dates_str.split(',')]
+                selected_arrival_dates = [pd.to_datetime(d, format='%Y/%m/%d').date() for d in date_strings]
+            except ValueError:
+                st.error("到店日期格式不正确，请输入 YYYY/MM/DD 格式，并用逗号分隔。")
+                st.stop()
 
         if selected_arrival_dates:
             arrival_df = original_df[
@@ -631,7 +644,6 @@ def run_data_analysis_app():
             ].copy()
 
             if not arrival_df.empty:
-                # [关键更新] 使用新的列名 '房数'
                 arrival_summary = arrival_df.groupby([arrival_df['到达'].dt.date, '楼层'])['房数'].sum().unstack(fill_value=0)
                 arrival_summary.index.name = "到店日期"
                 st.dataframe(arrival_summary)
@@ -640,29 +652,33 @@ def run_data_analysis_app():
     
     st.markdown("---")
 
-    # --- 功能 2: 动态价格入住矩阵 ---
+    # --- 功能 2: 每日在住房间按价格分布矩阵 ---
     st.header("2. 每日在住房间按价格分布矩阵")
     with st.expander("点击展开或折叠", expanded=True):
-        all_stay_dates = sorted(expanded_df['住店日'].dt.date.unique())
         
-        # [关键更新] 改为多选，最多7个
-        selected_stay_dates = st.multiselect(
-            "选择住店日期 (最多7个)",
-            options=all_stay_dates,
-            default=all_stay_dates[:7],
-            max_selections=7,
-            key='stay_date_multiselect'
+        # [关键更新] 改为手动输入日期
+        default_stay_date = pd.to_datetime(expanded_df['住店日'].min()).strftime('%Y/%m/%d') if not expanded_df.empty else ""
+        stay_dates_str = st.text_input(
+            "输入住店日期 (用逗号分隔, 格式: YYYY/MM/DD)",
+            default_stay_date
         )
         
-        # [关键更新] 增加市场码筛选
+        selected_stay_dates = []
+        if stay_dates_str:
+            try:
+                stay_date_strings = [d.strip() for d in stay_dates_str.split(',')]
+                selected_stay_dates = [pd.to_datetime(d, format='%Y/%m/%d').date() for d in stay_date_strings]
+            except ValueError:
+                st.error("住店日期格式不正确，请输入 YYYY/MM/DD 格式，并用逗号分隔。")
+                st.stop()
+
         all_market_codes = sorted(original_df['市场码'].dropna().unique())
         selected_market_codes = st.multiselect(
             "选择市场码 (可多选)",
             options=all_market_codes,
-            default=all_market_codes # 默认全选
+            default=all_market_codes
         )
         
-        # [关键更新] 升级价格区间输入
         price_bins_str = st.text_input(
             "输入自定义价格区间 (例如: <400, 400-900, >900)",
             "<400, 400-480, 481-500, 501-550, 551-699, >700"
@@ -713,26 +729,34 @@ def run_data_analysis_app():
             ].copy()
 
             if not matrix_df.empty:
-                # 使用 right=True, 让区间包含右边界. 400-500 区间包含 500
                 matrix_df['价格区间'] = pd.cut(
                     matrix_df['房价'], bins=bins, labels=labels, right=True, include_lowest=True
                 )
                 
-                # pivot_table 现在只需计算行数，因为我们已经按房数展开了
-                pivot_table = pd.pivot_table(
-                    matrix_df.dropna(subset=['价格区间']), # 忽略没有落入任何区间的房价
-                    index=matrix_df['住店日'].dt.date,
-                    columns='价格区间',
-                    aggfunc='size', # 使用 size 来计数
-                    fill_value=0
-                )
-                
-                if not pivot_table.empty:
-                    pivot_table['每日总计'] = pivot_table.sum(axis=1)
-                    st.dataframe(pivot_table.sort_index())
-                else:
-                    st.warning(f"在所选日期和市场码范围内，所有房价都不在您定义的价格区间内。")
-
+                # [关键更新] 按楼层分开显示
+                buildings = sorted(matrix_df['楼层'].unique())
+                for building in buildings:
+                    st.subheader(f"📍 {building} - 在住房间分布")
+                    building_df = matrix_df[matrix_df['楼层'] == building]
+                    
+                    if not building_df.empty:
+                        # [关键更新] 使用 '房数' 列进行求和
+                        pivot_table = pd.pivot_table(
+                            building_df.dropna(subset=['价格区间']),
+                            index=building_df['住店日'].dt.date,
+                            columns='价格区间',
+                            values='房数', # 使用房数作为值
+                            aggfunc='sum',   # 对房数进行求和
+                            fill_value=0
+                        )
+                        
+                        if not pivot_table.empty:
+                            pivot_table['每日总计'] = pivot_table.sum(axis=1)
+                            st.dataframe(pivot_table.sort_index())
+                        else:
+                             st.info(f"在 {building} 中，所选条件下的所有房价都不在您定义的价格区间内。")
+                    else:
+                        st.info(f"在 {building} 中，没有找到符合所选条件的在住记录。")
             else:
                 st.warning(f"在所选日期和市场码范围内没有找到在住记录。")
 
@@ -782,7 +806,7 @@ with st.sidebar:
         options=["OCR 工具", "比对平台", "报告分析器", "数据分析"],
         icons=["camera-reels", "columns-gap", "file-earmark-bar-graph", "bar-chart-line"],
         menu_icon="tools",
-        default_index=0,
+        default_index=3,
     )
 
 st.sidebar.markdown("---")
