@@ -5,7 +5,7 @@ import pandas as pd
 import io
 import json
 import unicodedata
-import os
+import os  # [关键更新] 导入os模块来读取环境变量
 
 # --- SDK 依赖 ---
 # requirements.txt needs to include: alibabacloud_ocr_api20210707, pandas, streamlit, pillow, openpyxl
@@ -19,15 +19,13 @@ except ImportError:
 
 
 # --- MOCK FUNCTION for Report Analyzer ---
-# This is a placeholder for the original 'analyze_excel.py' module.
-# It simulates the analysis process to make the app runnable.
 def analyze_reports_ultimate(file_paths):
     """
     一个模拟函数，用于替代缺失的 analyze_excel.py 模块。
     它会生成一些示例分析结果。
     """
     summaries = []
-    unknown_codes = {"XYZ": 2, "ABC": 5} # 示例未知代码
+    unknown_codes = {"XYZ": 2, "ABC": 5} 
 
     for path in file_paths:
         file_name = os.path.basename(path)
@@ -67,10 +65,9 @@ def run_ocr_app():
                 st.form_submit_button("登录", on_click=password_entered)
 
         def password_entered():
-            # [关键]：这里从st.secrets读取你在Render环境变量中设置的用户名和密码
-            # st.secrets['app_credentials']['username']
-            app_username = st.secrets.get("app_credentials", {}).get("username")
-            app_password = st.secrets.get("app_credentials", {}).get("password")
+            # [关键更新]：直接从os.environ读取你在Render环境变量中设置的独立变量
+            app_username = os.environ.get("APP_USERNAME")
+            app_password = os.environ.get("APP_PASSWORD")
             
             if st.session_state["username"] == app_username and st.session_state["password"] == app_password:
                 st.session_state["password_correct"] = True
@@ -79,9 +76,9 @@ def run_ocr_app():
             else:
                 st.session_state["password_correct"] = False
 
-        # [关键]：检查你在Render环境变量中是否配置了凭证
-        if not st.secrets.get("app_credentials", {}).get("username") or not st.secrets.get("app_credentials", {}).get("password"):
-            st.error("错误：应用的用户名和密码未在 Render 的环境变量中正确配置。")
+        # [关键更新]：检查你在Render环境变量中是否配置了独立凭证
+        if not os.environ.get("APP_USERNAME") or not os.environ.get("APP_PASSWORD"):
+            st.error("错误：应用的用户名和密码未在 Render 的环境变量中正确配置。请参考指南操作。")
             return False
 
         if st.session_state.get("password_correct", False):
@@ -97,19 +94,16 @@ def run_ocr_app():
         if not ALIYUN_SDK_AVAILABLE:
             st.error("错误：阿里云 SDK 未安装。请确保 requirements.txt 文件配置正确。")
             return None
-        # [关键]：同样，阿里云的凭证也需要配置在Render的环境变量中
-        if "aliyun_credentials" not in st.secrets:
+        
+        # [关键更新]：直接从os.environ读取独立的阿里云凭证
+        access_key_id = os.environ.get("ALIYUN_ACCESS_KEY_ID")
+        access_key_secret = os.environ.get("ALIYUN_ACCESS_KEY_SECRET")
+
+        if not access_key_id or not access_key_secret:
             st.error("错误：阿里云凭证未在 Render 的环境变量中配置。")
             return None
+            
         try:
-            creds = st.secrets["aliyun_credentials"]
-            access_key_id = creds.get("access_key_id")
-            access_key_secret = creds.get("access_key_secret")
-
-            if not access_key_id or not access_key_secret:
-                st.error("错误：阿里云 AccessKey ID 或 Secret 未在 Secrets 中正确配置。")
-                return None
-
             config = open_api_models.Config(
                 access_key_id=access_key_id,
                 access_key_secret=access_key_secret,
@@ -137,12 +131,11 @@ def run_ocr_app():
                    error_message = response.body.message
                 raise Exception(f"阿里云 OCR API 返回错误: {error_message}")
 
-
         except Exception as e:
             st.error(f"调用阿里云 OCR API 失败: {e}")
             return None
 
-    # --- 信息提取与格式化 ---
+    # --- 信息提取与格式化 (此处逻辑不变) ---
     def extract_booking_info(ocr_text: str):
         team_name_pattern = re.compile(r'((?:CON|FIT|WA)\d+\s*/\s*[\u4e00-\u9fa5\w]+)', re.IGNORECASE)
         date_pattern = re.compile(r'(\d{1,2}/\d{1,2})')
@@ -210,7 +203,7 @@ def run_ocr_app():
         room_string = " ".join(formatted_rooms) if formatted_rooms else "无房间详情"
         return f"新增{team_type} {team_name} {date_range_string} {room_string}。销售通知"
 
-    # --- Streamlit 主应用 ---
+    # --- Streamlit 主应用 (UI部分不变) ---
     st.title("金陵富士康一秒boom - OCR 工具")
 
     if check_password():
@@ -228,7 +221,6 @@ def run_ocr_app():
             st.image(image, caption="上传的图片", width=300)
 
             if st.button("从图片提取信息 (阿里云 OCR)"):
-                # Clear previous state for this specific app
                 for key in ['raw_ocr_text', 'booking_info']:
                     if key in st.session_state:
                         del st.session_state[key]
@@ -269,12 +261,10 @@ def run_ocr_app():
                 st.code(final_speech, language=None)
 
 # ==============================================================================
-# --- APP 2: 多维审核比对平台 ---
+# --- APP 2: 多维审核比对平台 (此部分代码无需修改，因为它不使用secrets) ---
 # ==============================================================================
 def run_comparison_app():
     """Contains all logic and UI for the Data Comparison Platform."""
-
-    # --- Session State Initialization ---
     SESSION_DEFAULTS = {
         'df1': None, 'df2': None, 'df1_name': "", 'df2_name': "",
         'ran_comparison': False, 'common_rows': pd.DataFrame(),
@@ -285,7 +275,6 @@ def run_comparison_app():
         if key not in st.session_state:
             st.session_state[key] = value
 
-    # --- Helper Functions ---
     def forensic_clean_text(text):
         if not isinstance(text, str): return text
         try:
@@ -345,7 +334,6 @@ def run_comparison_app():
             return [style] * len(row)
         return [''] * len(row)
 
-    # --- UI Layout ---
     st.title("金陵富士康一秒boom - 比对平台")
     st.info("全新模式：结果以独立的标签页展示，并内置智能日期统一引擎，比对更精准！")
 
@@ -493,7 +481,7 @@ def run_comparison_app():
             st.dataframe(st.session_state.df2)
 
 # ==============================================================================
-# --- APP 3: Excel 报告分析器 ---
+# --- APP 3: Excel 报告分析器 (此部分代码无需修改，因为它不使用secrets) ---
 # ==============================================================================
 def run_analyzer_app():
     """Contains all logic and UI for the Excel Report Analyzer."""
@@ -526,7 +514,6 @@ def run_analyzer_app():
         if st.button("开始分析"):
             with st.spinner("正在分析中，请稍候..."):
                 st.subheader("分析结果")
-                # IMPORTANT: Using the mock function here
                 summaries, unknown_codes = analyze_reports_ultimate(file_paths)
             
             for summary in summaries:
@@ -538,7 +525,6 @@ def run_analyzer_app():
                 for code, count in unknown_codes.items():
                     st.write(f"代码: '{code}' (出现了 {count} 次)")
             
-            # Clean up
             for f_path in file_paths:
                 try:
                     os.remove(f_path)
