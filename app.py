@@ -5,10 +5,12 @@ import pandas as pd
 import io
 import json
 import unicodedata
-import os  # [关键更新] 导入os模块来读取环境变量
+import os
+# [关键更新] 导入新的侧边栏组件
+from streamlit_option_menu import option_menu
 
 # --- SDK 依赖 ---
-# requirements.txt needs to include: alibabacloud_ocr_api20210707, pandas, streamlit, pillow, openpyxl
+# requirements.txt needs to include: alibabacloud_ocr_api20210707, pandas, streamlit, pillow, openpyxl, streamlit-option-menu
 try:
     from alibabacloud_ocr_api20210707.client import Client as OcrClient
     from alibabacloud_tea_openapi import models as open_api_models
@@ -65,7 +67,6 @@ def run_ocr_app():
                 st.form_submit_button("登录", on_click=password_entered)
 
         def password_entered():
-            # [关键更新]：直接从os.environ读取你在Render环境变量中设置的独立变量
             app_username = os.environ.get("APP_USERNAME")
             app_password = os.environ.get("APP_PASSWORD")
             
@@ -76,7 +77,6 @@ def run_ocr_app():
             else:
                 st.session_state["password_correct"] = False
 
-        # [关键更新]：检查你在Render环境变量中是否配置了独立凭证
         if not os.environ.get("APP_USERNAME") or not os.environ.get("APP_PASSWORD"):
             st.error("错误：应用的用户名和密码未在 Render 的环境变量中正确配置。请参考指南操作。")
             return False
@@ -95,7 +95,6 @@ def run_ocr_app():
             st.error("错误：阿里云 SDK 未安装。请确保 requirements.txt 文件配置正确。")
             return None
         
-        # [关键更新]：直接从os.environ读取独立的阿里云凭证
         access_key_id = os.environ.get("ALIYUN_ACCESS_KEY_ID")
         access_key_secret = os.environ.get("ALIYUN_ACCESS_KEY_SECRET")
 
@@ -135,7 +134,7 @@ def run_ocr_app():
             st.error(f"调用阿里云 OCR API 失败: {e}")
             return None
 
-    # --- 信息提取与格式化 (此处逻辑不变) ---
+    # --- 信息提取与格式化 ---
     def extract_booking_info(ocr_text: str):
         team_name_pattern = re.compile(r'((?:CON|FIT|WA)\d+\s*/\s*[\u4e00-\u9fa5\w]+)', re.IGNORECASE)
         date_pattern = re.compile(r'(\d{1,2}/\d{1,2})')
@@ -203,7 +202,7 @@ def run_ocr_app():
         room_string = " ".join(formatted_rooms) if formatted_rooms else "无房间详情"
         return f"新增{team_type} {team_name} {date_range_string} {room_string}。销售通知"
 
-    # --- Streamlit 主应用 (UI部分不变) ---
+    # --- Streamlit 主应用 ---
     st.title("金陵富士康一秒boom - OCR 工具")
 
     if check_password():
@@ -261,7 +260,7 @@ def run_ocr_app():
                 st.code(final_speech, language=None)
 
 # ==============================================================================
-# --- APP 2: 多维审核比对平台 (此部分代码无需修改，因为它不使用secrets) ---
+# --- APP 2: 多维审核比对平台 ---
 # ==============================================================================
 def run_comparison_app():
     """Contains all logic and UI for the Data Comparison Platform."""
@@ -481,7 +480,7 @@ def run_comparison_app():
             st.dataframe(st.session_state.df2)
 
 # ==============================================================================
-# --- APP 3: Excel 报告分析器 (此部分代码无需修改，因为它不使用secrets) ---
+# --- APP 3: Excel 报告分析器 ---
 # ==============================================================================
 def run_analyzer_app():
     """Contains all logic and UI for the Excel Report Analyzer."""
@@ -551,21 +550,23 @@ def run_analyzer_app():
 # ==============================================================================
 st.set_page_config(layout="wide", page_title="金陵富士康一秒boom")
 
-st.sidebar.title("金陵富士康一秒boom")
-st.sidebar.markdown("请从下方选择一个工具：")
-
-app_choice = st.sidebar.radio(
-    "选择应用",
-    ("OCR 销售通知生成器", "多维审核比对平台", "Excel 报告分析器")
-)
+# [关键更新] 使用新的 option_menu 组件
+with st.sidebar:
+    app_choice = option_menu(
+        menu_title="金陵富士康一秒boom",  # required
+        options=["OCR 工具", "比对平台", "报告分析器"],  # required
+        icons=["camera-reels", "columns-gap", "file-earmark-bar-graph"],  # optional
+        menu_icon="cast",  # optional
+        default_index=0,  # optional
+    )
 
 st.sidebar.markdown("---")
 st.sidebar.info("这是一个将多个工具集成到一起的应用。")
 
-if app_choice == "OCR 销售通知生成器":
+if app_choice == "OCR 工具":
     run_ocr_app()
-elif app_choice == "多维审核比对平台":
+elif app_choice == "比对平台":
     run_comparison_app()
-elif app_choice == "Excel 报告分析器":
+elif app_choice == "报告分析器":
     run_analyzer_app()
 
