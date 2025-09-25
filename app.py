@@ -258,6 +258,11 @@ def get_building(room_code):
     """根据房型代码获取楼层"""
     return room_to_building.get(room_code, "其他楼")
 
+
+# 上传文件
+uploaded_file = st.sidebar.file_uploader("上传您的Excel文件", type=["xlsx", "xls"])
+
+
 # --- 主应用布局 (使用标签页) ---
 tab_names = ["🏨 酒店入住数据分析", "📈 Excel 报告分析器", "📊 多维审核比对平台", "📑 OCR 销售通知生成器"]
 tab1, tab2, tab3, tab4 = st.tabs(tab_names)
@@ -265,101 +270,108 @@ tab1, tab2, tab3, tab4 = st.tabs(tab_names)
 with tab1:
     st.title("酒店入住数据分析应用")
     st.markdown("---")
-    # 上传文件
-    uploaded_file = st.sidebar.file_uploader("上传您的Excel文件", type=["xlsx", "xls"])
     if uploaded_file:
-        df = pd.read_excel(uploaded_file)
-        st.success("文件上传成功！")
-        # 预处理数据
-        df.columns = [col.upper() for col in df.columns]
-        df['到达'] = pd.to_datetime(df['到达'], errors='coerce').dt.date
-        df['离开'] = pd.to_datetime(df['离开'], errors='coerce').dt.date
-        # 清洗数据，删除到达或离开日期为空的行
-        df.dropna(subset=['到达', '离开'], inplace=True)
-        df = df[df['房型代码'].isin(jinling_rooms + yatal_rooms)]
-        df['楼层'] = df['房型代码'].apply(get_building)
-        # 1. 到店房数统计
-        st.header("1. 到店房数统计")
-        st.write("---")
-        arrival_date_col = '到达'  # 你的数据中代表到达日期的列名
-        status_col = '状态'       # 你的数据中代表状态的列名
-        room_count_col = '房间数'   # 你的数据中代表房间数的列名
-        unique_arrival_dates = sorted(df[arrival_date_col].unique())
-        selected_date = st.date_input("选择一个日期查看当天的到店房数", value=unique_arrival_dates[0] if unique_arrival_dates else None)
-        if selected_date:
-            # 筛选出符合条件的到店数据 (状态为R，到达日期为选择日期)
-            arrival_df = df[(df[status_col] == 'R') & (df[arrival_date_col] == selected_date)]
-            # 按楼层统计房间数
-            arrival_by_building = arrival_df.groupby('楼层')[room_count_col].sum().reset_index()
-            st.subheader(f"到店日期：{selected_date}，状态：R")
-            if not arrival_by_building.empty:
-                jinling_count = arrival_by_building[arrival_by_building['楼层'] == '金陵楼'][room_count_col].sum()
-                yatal_count = arrival_by_building[arrival_by_building['楼层'] == '亚太楼'][room_count_col].sum()
-                st.info(f"金陵楼到店房数: **{jinling_count}**")
-                st.info(f"亚太楼到店房数: **{yatal_count}**")
-            else:
-                st.warning("所选日期没有到店数据。")
-        st.markdown("---")
-        # 2. 住店日筛选
-        st.header("2. 住店日筛选")
-        st.write("---")
-        # 住店日筛选器
-        stay_dates_min = df['到达'].min()
-        stay_dates_max = df['离开'].max()
-        stay_date_range = st.date_input(
-            "选择住店日范围",
-            value=(stay_dates_min, stay_dates_max) if stay_dates_min and stay_dates_max else None
-        )
-        if stay_date_range and len(stay_date_range) == 2:
-            start_date, end_date = stay_date_range
-            # 房价范围筛选器
-            price_col = '房价' # 你的数据中代表房价的列名
-            min_price = int(df[price_col].min()) if not df[price_col].isnull().all() else 0
-            max_price = int(df[price_col].max()) if not df[price_col].isnull().all() else 1000
-            price_range = st.slider(
-                "选择房价范围",
-                min_value=min_price,
-                max_value=max_price,
-                value=(min_price, max_price),
-                step=10
+        try:
+            df = pd.read_excel(uploaded_file)
+            st.success("文件上传成功！")
+            # 预处理数据
+            df.columns = [col.upper() for col in df.columns]
+            df['到达'] = pd.to_datetime(df['到达'], errors='coerce').dt.date
+            df['离开'] = pd.to_datetime(df['离开'], errors='coerce').dt.date
+            # 清洗数据，删除到达或离开日期为空的行
+            df.dropna(subset=['到达', '离开'], inplace=True)
+            df = df[df['房型代码'].isin(jinling_rooms + yatal_rooms)]
+            df['楼层'] = df['房型代码'].apply(get_building)
+            # 1. 到店房数统计
+            st.header("1. 到店房数统计")
+            st.write("---")
+            arrival_date_col = '到达'  # 你的数据中代表到达日期的列名
+            status_col = '状态'       # 你的数据中代表状态的列名
+            room_count_col = '房间数'   # 你的数据中代表房间数的列名
+            unique_arrival_dates = sorted(df[arrival_date_col].unique())
+            selected_dates = st.multiselect(
+                "选择一个或多个日期查看当天的到店房数 (最多7个)",
+                options=unique_arrival_dates,
+                default=unique_arrival_dates[:1] if unique_arrival_dates else None,
+                max_selections=7
             )
-            # 市场码多选筛选器
-            market_code_col = '市场码' # 你的数据中代表市场码的列名
-            unique_market_codes = df[market_code_col].unique().tolist()
-            selected_market_codes = st.multiselect(
-                "选择市场码",
-                options=unique_market_codes,
-                default=unique_market_codes
+            if selected_dates:
+                # 筛选出符合条件的到店数据 (状态为R，到达日期为所选日期中的一个)
+                arrival_df = df[(df[status_col] == 'R') & (df[arrival_date_col].isin(selected_dates))]
+                # 按楼层统计房间数
+                arrival_by_building = arrival_df.groupby('楼层')[room_count_col].sum().reset_index()
+                st.subheader(f"到店日期：{', '.join([str(d) for d in sorted(selected_dates)])}，状态：R")
+                if not arrival_by_building.empty:
+                    jinling_count = arrival_by_building[arrival_by_building['楼层'] == '金陵楼'][room_count_col].sum()
+                    yatal_count = arrival_by_building[arrival_by_building['楼层'] == '亚太楼'][room_count_col].sum()
+                    st.info(f"金陵楼到店房数: **{jinling_count}**")
+                    st.info(f"亚太楼到店房数: **{yatal_count}**")
+                else:
+                    st.warning("所选日期没有到店数据。")
+            st.markdown("---")
+            # 2. 住店日筛选
+            st.header("2. 住店日筛选")
+            st.write("---")
+            # 住店日筛选器
+            stay_dates_min = df['到达'].min()
+            stay_dates_max = df['离开'].max()
+            stay_date_range = st.date_input(
+                "选择住店日范围",
+                value=(stay_dates_min, stay_dates_max) if stay_dates_min and stay_dates_max else None
             )
-            # 根据住店日、房价和市场码进行筛选
-            filtered_df_list = []
-            for index, row in df.iterrows():
-                arrival = row['到达']
-                departure = row['离开']
-                # 计算住店期间的每一天
-                current_date = arrival
-                while current_date < departure:
-                    if start_date <= current_date <= end_date:
-                        # 如果该行数据符合房价和市场码筛选条件，且在住店日期范围内，则添加
-                        if price_range[0] <= row[price_col] <= price_range[1] and row[market_code_col] in selected_market_codes:
-                            filtered_df_list.append({
-                                '订单号': row['订单号'],
-                                '住店日': current_date,
-                                '房价': row['房价'],
-                                '市场码': row['市场码'],
-                                '房间数': row['房间数']
-                            })
-                    current_date += timedelta(days=1)
-            if filtered_df_list:
-                filtered_df = pd.DataFrame(filtered_df_list)
-                # 统计具体的对应房数
-                total_rooms = filtered_df['房间数'].sum()
-                st.subheader(f"筛选结果 ({start_date} 至 {end_date})")
-                st.success(f"符合筛选条件的房间总数: **{total_rooms}**")
-                st.markdown("### 详细数据")
-                st.dataframe(filtered_df)
-            else:
-                st.warning("没有找到符合筛选条件的数据。")
+            if stay_date_range and len(stay_date_range) == 2:
+                start_date, end_date = stay_date_range
+                # 房价范围筛选器
+                price_col = '房价' # 你的数据中代表房价的列名
+                min_price = int(df[price_col].min()) if not df[price_col].isnull().all() else 0
+                max_price = int(df[price_col].max()) if not df[price_col].isnull().all() else 1000
+                price_range = st.slider(
+                    "选择房价范围",
+                    min_value=min_price,
+                    max_value=max_price,
+                    value=(min_price, max_price),
+                    step=10
+                )
+                # 市场码多选筛选器
+                market_code_col = '市场码' # 你的数据中代表市场码的列名
+                unique_market_codes = df[market_code_col].unique().tolist()
+                selected_market_codes = st.multiselect(
+                    "选择市场码",
+                    options=unique_market_codes,
+                    default=unique_market_codes
+                )
+                # 根据住店日、房价和市场码进行筛选
+                filtered_df_list = []
+                for index, row in df.iterrows():
+                    arrival = row['到达']
+                    departure = row['离开']
+                    # 计算住店期间的每一天
+                    current_date = arrival
+                    while current_date < departure:
+                        if start_date <= current_date <= end_date:
+                            # 如果该行数据符合房价和市场码筛选条件，且在住店日期范围内，则添加
+                            if price_range[0] <= row[price_col] <= price_range[1] and row[market_code_col] in selected_market_codes:
+                                filtered_df_list.append({
+                                    '订单号': row['订单号'],
+                                    '住店日': current_date,
+                                    '房价': row['房价'],
+                                    '市场码': row['市场码'],
+                                    '房间数': row['房间数']
+                                })
+                        current_date += timedelta(days=1)
+                if filtered_df_list:
+                    filtered_df = pd.DataFrame(filtered_df_list)
+                    # 统计具体的对应房数
+                    total_rooms = filtered_df['房间数'].sum()
+                    st.subheader(f"筛选结果 ({start_date} 至 {end_date})")
+                    st.success(f"符合筛选条件的房间总数: **{total_rooms}**")
+                    st.markdown("### 详细数据")
+                    st.dataframe(filtered_df)
+                else:
+                    st.warning("没有找到符合筛选条件的数据。")
+        except Exception as e:
+            st.error(f"处理文件时发生错误：{e}")
+            st.info("请确保您上传的文件格式正确，并且包含'到达'、'离开'、'房型代码'、'状态'、'房间数'、'房价'和'市场码'等列。")
     else:
         st.info("请在左侧边栏上传您的Excel文件以开始分析。")
 
