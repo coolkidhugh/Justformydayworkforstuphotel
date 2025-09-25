@@ -563,9 +563,9 @@ def process_data(uploaded_file):
         st.error(f"上传的文件缺少以下必要的列: {', '.join(missing_cols)}。请检查文件。")
         return None, None
     
-    # [关键更新] 使用 dayfirst=True 参数来正确解析 '25/09/23' 这种格式
-    df['到达'] = pd.to_datetime(df['到达'], errors='coerce', dayfirst=True)
-    df['离开'] = pd.to_datetime(df['离开'], errors='coerce', dayfirst=True)
+    # [关键修正] 移除 dayfirst=True，让 pandas 自动推断 YY/MM/DD 格式
+    df['到达'] = pd.to_datetime(df['到达'], errors='coerce')
+    df['离开'] = pd.to_datetime(df['离开'], errors='coerce')
 
     df.dropna(subset=['到达', '离开', '房价', '房数'], inplace=True)
     df = df[df['离开'] > df['到达']].copy()
@@ -853,4 +853,5 @@ if check_password():
         run_analyzer_app()
     elif app_choice == "数据分析":
         run_data_analysis_app()
+"
 
