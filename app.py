@@ -195,7 +195,7 @@ def run_ocr_app_detailed():
         return f"新增{team_type} {team_name} {full_room_details} {salesperson}销售通知"
 
     # --- Streamlit 主应用 ---
-    st.title("炼狱金陵/金陵至尊必修剑谱 - OCR 工具")
+    st.title("炼狱金陵/金陵至尊必修剑谱 - OCR 工具 (明细版)")
     
     # [关键修正] 引入多步骤流程控制
     if 'ocr_step' not in st.session_state:
@@ -842,7 +842,7 @@ if check_password():
     with st.sidebar:
         app_choice = option_menu(
             menu_title="炼狱金陵/金陵至尊必修剑谱",
-            options=["OCR 工具 (明细版)", "比对平台", "报告分析器", "数据分析"],
+            options=["OCR 工具", "比对平台", "报告分析器", "数据分析"],
             icons=["camera-reels", "columns-gap", "file-earmark-bar-graph", "bar-chart-line"],
             menu_icon="tools",
             default_index=0,
@@ -851,7 +851,7 @@ if check_password():
     st.sidebar.markdown("---")
     st.sidebar.info("这是一个将多个工具集成到一起的应用。")
 
-    if app_choice == "OCR 工具 (明细版)":
+    if app_choice == "OCR 工具":
         run_ocr_app_detailed()
     elif app_choice == "比对平台":
         run_comparison_app()
