@@ -121,9 +121,11 @@ def run_ocr_app_detailed():
         lines = ocr_text.split('\n')
         date_groups = {} 
 
-        # 更强大的正则表达式，用于逐行解析
+        # [终极修正] 增加对状态 'R' 的强制要求
         line_pattern = re.compile(
-            r'(' + '|'.join(ALL_ROOM_CODES) + r')'  # Group 1: Room Type
+            r'^\s*R\s+'                             # Line must start with R
+            r'.*?'                                  # Anything in between (like team name)
+            r'\b(' + '|'.join(ALL_ROOM_CODES) + r')\b'  # Group 1: Room Type (as a whole word)
             r'\s+(\d+)\s+'                          # Group 2: Room Count
             r'.*?'                                  # Non-greedy anything
             r'(\d{1,2}/\d{2})'                      # Group 3: Arrival Date
@@ -144,7 +146,7 @@ def run_ocr_app_detailed():
                 date_groups[date_key].append((room_type.upper(), int(room_count), int(float(price))))
         
         if not date_groups:
-            return "错误：无法从图片中识别出任何有效的房型、日期和价格组合。"
+            return "错误：无法从图片中识别出任何状态为 'R' 的有效房型、日期和价格组合。"
 
         result_groups = []
         for (arr, dep), rooms in date_groups.items():
@@ -624,7 +626,8 @@ def process_data(uploaded_file):
 
     # [关键修正] 将 > 0 改为 >= 0，以包含当天入住当天离开的“日用房”用于到店统计
     df_for_arrivals = df.copy()
-    df_for_stays = df[df['入住天数'] > 0].copy()
+    # [终极修正] 增加对状态 'R' 和 'I' 的筛选
+    df_for_stays = df[(df['入住天数'] > 0) & (df['状态'].isin(['R', 'I']))].copy()
     
     if df_for_stays.empty:
         return df_for_arrivals, pd.DataFrame()
