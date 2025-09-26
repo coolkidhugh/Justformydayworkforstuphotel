@@ -108,7 +108,7 @@ def run_ocr_app():
             st.error(f"调用阿里云 OCR API 失败: {e}")
             return None
 
-    # --- [关键修正] 信息提取与格式化 (回归经典版) ---
+    # --- [关键升级] 信息提取与格式化 (支持多日期和价格) ---
     def extract_booking_info(ocr_text: str):
         team_name_pattern = re.compile(r'((?:CON|FIT|WA)\d+\s*/\s*[\u4e00-\u9fa5\w]+)', re.IGNORECASE)
         team_name_match = team_name_pattern.search(ocr_text)
@@ -117,68 +117,83 @@ def run_ocr_app():
         team_prefix = team_name[:3].upper()
         team_type = TEAM_TYPE_MAP.get(team_prefix, DEFAULT_TEAM_TYPE)
 
-        date_pattern = re.compile(r'(\d{1,2}/\d{2})')
-        all_dates = date_pattern.findall(ocr_text)
-        if not all_dates:
-            return "错误：无法识别出任何有效日期。"
+        lines = ocr_text.split('\n')
+        date_groups = {} 
+
+        # 更强大的正则表达式，用于逐行解析
+        line_pattern = re.compile(
+            r'(' + '|'.join(ALL_ROOM_CODES) + r')'  # Group 1: Room Type
+            r'\s+(\d+)\s+'                          # Group 2: Room Count
+            r'.*?'                                  # Non-greedy anything
+            r'(\d{1,2}/\d{2})'                      # Group 3: Arrival Date
+            r'.*?'                                  # Non-greedy anything
+            r'(\d{1,2}/\d{2})'                      # Group 4: Departure Date
+            r'.*?'                                  # Non-greedy anything
+            r'(\d+\.\d{2})'                         # Group 5: Price
+        , re.IGNORECASE)
+
+        for line in lines:
+            match = line_pattern.search(line)
+            if match:
+                room_type, room_count, arrival, departure, price = match.groups()
+                date_key = (arrival, departure)
+                if date_key not in date_groups:
+                    date_groups[date_key] = []
+                # 添加价格信息
+                date_groups[date_key].append((room_type.upper(), int(room_count), int(float(price))))
         
-        # 寻找最早和最晚的日期作为核心时间范围
-        unique_dates = sorted(list(set(all_dates)))
-        arrival_date_str = unique_dates[0]
-        departure_date_str = unique_dates[-1]
+        if not date_groups:
+            return "错误：无法从图片中识别出任何有效的房型、日期和价格组合。"
 
-        room_codes_pattern_str = '|'.join(ALL_ROOM_CODES)
-        # 匹配 房型 + 房数，忽略中间的其他内容
-        room_finder_pattern = re.compile(f'({room_codes_pattern_str}).*?(\\d+)\\s+房', re.IGNORECASE | re.DOTALL)
-        # 更通用的匹配方式，找到房型和它后面最近的数字
-        line_by_line_pattern = re.compile(f'({room_codes_pattern_str}).*?(\\d+)', re.IGNORECASE)
-
-        found_rooms = line_by_line_pattern.findall(ocr_text)
-        
-        if not found_rooms:
-            return "错误：无法识别出任何有效的房型代码和数量。"
-
-        room_details = [(room.upper(), int(count)) for room, count in found_rooms]
-
-        try:
-            arr_month, arr_day = map(int, arrival_date_str.split('/'))
-            dep_month, dep_day = map(int, departure_date_str.split('/'))
-            formatted_arrival = f"{arr_month}月{arr_day}日"
-            formatted_departure = f"{dep_month}月{dep_day}日"
-        except (ValueError, IndexError):
-            formatted_arrival = arrival_date_str
-            formatted_departure = departure_date_str
-            
-        df = pd.DataFrame(room_details, columns=['房型', '房数'])
-        # 汇总所有识别到的房间
-        df = df.groupby('房型')['房数'].sum().reset_index()
+        result_groups = []
+        for (arr, dep), rooms in date_groups.items():
+            df = pd.DataFrame(rooms, columns=['房型', '房数', '定价'])
+            result_groups.append({
+                "arrival_raw": arr,
+                "departure_raw": dep,
+                "dataframe": df
+            })
 
         return {
             "team_name": team_name,
             "team_type": team_type,
-            "arrival_date": formatted_arrival,
-            "departure_date": formatted_departure,
-            "dataframe": df
+            "booking_groups": sorted(result_groups, key=lambda x: x['arrival_raw'])
         }
 
-    # --- [关键修正] 话术生成 (增加销售员) ---
-    def format_notification_speech(team_name, team_type, arrival_date, departure_date, room_df, salesperson):
-        date_range_string = f"{arrival_date}-{departure_date}"
-        
-        rooms_list = []
-        for _, row in room_df.iterrows():
-            # 假设价格信息现在不强求，所以话术中去掉价格括号
-            rooms_list.append(f"{row['房数']}{row['房型']}")
+    # --- [关键升级] 话术生成 (支持多日期和价格) ---
+    def format_notification_speech(team_name, team_type, booking_groups, salesperson):
+        def format_date_range(arr_str, dep_str):
+            try:
+                arr_month, arr_day = arr_str.split('/')
+                dep_month, dep_day = dep_str.split('/')
+                # 如果月份相同，格式为 10.22-24
+                if arr_month == dep_month:
+                    return f"{int(arr_month)}.{int(arr_day)}-{int(dep_day)}"
+                # 如果月份不同
+                return f"{int(arr_month)}.{int(arr_day)}-{int(dep_month)}.{int(dep_day)}"
+            except:
+                return f"{arr_str}-{dep_str}"
+
+        speech_parts = []
+        for group in booking_groups:
+            date_range_string = format_date_range(group['arrival_raw'], group['departure_raw'])
             
-        room_string = " ".join(rooms_list)
-        return f"新增{team_type} {team_name} {date_range_string} {room_string}。{salesperson}销售通知"
+            rooms_list = []
+            for _, row in group['dataframe'].iterrows():
+                rooms_list.append(f"{row['房数']}{row['房型']}({row['定价']})")
+                
+            room_string = "".join(rooms_list) # 用空字符串连接，更紧凑
+            speech_parts.append(f"{date_range_string} {room_string}")
+            
+        full_room_details = " ".join(speech_parts)
+        return f"新增{team_type} {team_name} {full_room_details} {salesperson}销售通知"
 
     # --- Streamlit 主应用 ---
     st.title("炼狱金陵/金陵至尊必修剑谱 - OCR 工具")
     
     st.markdown("""
     **全新工作流**：
-    1.  **上传图片，点击提取**：程序将识别核心信息并汇总所有房间。
+    1.  **上传图片，点击提取**：程序将智能识别并分组不同的入住日期。
     2.  **自动填充与人工修正**：程序会尝试自动填充。您可以**参照原始文本**，直接在表格中修改。
     3.  **选择销售并生成话术**：确认无误后，选择销售员并生成最终话术。
     """)
@@ -216,30 +231,19 @@ def run_ocr_app():
         st.markdown("---")
         st.subheader("核对与编辑信息")
 
-        # [关键修正] UI 回归经典版，并增加销售选择
-        col1, col2, col3 = st.columns(3)
-        with col1:
-            info['team_name'] = st.text_input("团队名称", value=info['team_name'])
-        with col2:
-            info['arrival_date'] = st.text_input("到达日期", value=info['arrival_date'])
-        with col3:
-            info['departure_date'] = st.text_input("离开日期", value=info['departure_date'])
-
-        st.markdown("##### 房间详情 (可直接在表格中编辑)")
-        edited_df = st.data_editor(info['dataframe'], num_rows="dynamic", use_container_width=True, key="ocr_editor")
-        info['dataframe'] = edited_df # Save edits back to session state
-
-        selected_salesperson = st.selectbox("选择对应销售", options=SALES_LIST)
+        # [关键升级] UI 调整以适应多日期
+        info['team_name'] = st.text_input("团队名称", value=info['team_name'])
         
+        for i, group in enumerate(info['booking_groups']):
+            st.markdown(f"**日期范围: {group['arrival_raw']} - {group['departure_raw']}**")
+            # 使用 data_editor 允许修改
+            edited_df = st.data_editor(group['dataframe'], key=f"editor_{i}", num_rows="dynamic")
+            info['booking_groups'][i]['dataframe'] = edited_df # 将修改保存回 session state
+        
+        selected_salesperson = st.selectbox("选择对应销售", options=SALES_LIST)
+
         if st.button("生成最终话术"):
-            final_speech = format_notification_speech(
-                info['team_name'], 
-                info['team_type'], 
-                info['arrival_date'], 
-                info['departure_date'], 
-                info['dataframe'], 
-                selected_salesperson
-            )
+            final_speech = format_notification_speech(info['team_name'], info['team_type'], info['booking_groups'], selected_salesperson)
             st.subheader("生成成功！")
             st.success(final_speech)
             st.code(final_speech, language=None)
@@ -840,4 +844,9 @@ if check_password():
         run_analyzer_app()
     elif app_choice == "数据分析":
         run_data_analysis_app()
+" of the Canvas and am asking the following query:
+bro 我明白了
+之前的那个版本再给我一下 可以显示不同日期 话术也分开的
+这个版本也很好 我也留着 两个版本都很好 
+你给我再加一个选项 ocr工具2.0
 
