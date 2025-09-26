@@ -228,7 +228,7 @@ def run_ocr_app_detailed():
             st.markdown("---")
             # [关键修正] 优化原始文本显示
             with st.expander("点击查看/隐藏原始识别文本"):
-                st.code(st.session_state['raw_ocr_text_detailed'])
+                st.text_area("原始文本", value=st.session_state['raw_ocr_text_detailed'], height=250)
         
         st.markdown("---")
         st.subheader("核对与编辑信息")
