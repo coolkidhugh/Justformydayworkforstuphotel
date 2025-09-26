@@ -65,7 +65,6 @@ def run_ocr_app():
             st.error("错误：阿里云 SDK 未安装。请确保 requirements.txt 文件配置正确。")
             return None
         
-        # [关键更新] 从 st.secrets 读取凭证
         if "aliyun_credentials" not in st.secrets:
             st.error("错误：阿里云凭证未在 Streamlit Cloud 的 Secrets 中配置。")
             return None
@@ -178,7 +177,7 @@ def run_ocr_app():
         return f"新增{team_type} {team_name} {date_range_string} {room_string}。销售通知"
 
     # --- Streamlit 主应用 ---
-    st.title("炼狱金陵劳工必修剑谱 - OCR 工具")
+    st.title("炼狱金陵/金陵至尊必修剑谱 - OCR 工具")
     
     st.markdown("""
     **全新工作流**：
@@ -307,7 +306,7 @@ def run_comparison_app():
             return [style] * len(row)
         return [''] * len(row)
 
-    st.title("炼狱金陵劳工必修剑谱 - 比对平台")
+    st.title("炼狱金陵/金陵至尊必修剑谱 - 比对平台")
     st.info("全新模式：结果以独立的标签页展示，并内置智能日期统一引擎，比对更精准！")
 
     st.header("第 1 步: 上传文件")
@@ -364,10 +363,11 @@ def run_comparison_app():
             else:
                 with st.spinner('正在执行终极比对...'):
                     st.session_state.ran_comparison = True
-                    st.session_state.df1.sort_values(by=mapping['file1']['name'], inplace=True, ignore_index=True)
-                    st.session_state.df2.sort_values(by=mapping['file2']['name'], inplace=True, ignore_index=True)
-                    std_df1 = process_and_standardize(st.session_state.df1, mapping['file1'], case_insensitive, room_type_equivalents)
-                    std_df2 = process_and_standardize(st.session_state.df2, mapping['file2'], case_insensitive)
+                    
+                    # [关键修正] 将 room_type_equivalents 传递给正确的函数调用
+                    std_df1 = process_and_standardize(st.session_state.df1.sort_values(by=mapping['file1']['name'], ignore_index=True), mapping['file1'], case_insensitive)
+                    std_df2 = process_and_standardize(st.session_state.df2.sort_values(by=mapping['file2']['name'], ignore_index=True), mapping['file2'], case_insensitive, room_type_equivalents=room_type_equivalents)
+
                     merged_df = pd.merge(std_df1, std_df2, on='name', how='outer', suffixes=('_1', '_2'))
                     cols1_for_check = [f"{c}_1" for c in std_df1.columns if c != 'name']
                     cols2_for_check = [f"{c}_2" for c in std_df2.columns if c != 'name']
@@ -406,13 +406,13 @@ def run_comparison_app():
                 stat_cols[2].metric(f"仅 '{st.session_state.df2_name}' 有", only_2_count)
 
                 st.subheader("人员名单详情")
-                with st.expander(f"查看 {matched_count} 条信息完全一致的名单"): # [界面修正] 移除符号
+                with st.expander(f"查看 {matched_count} 条信息完全一致的名单"):
                     if not st.session_state.matched_df.empty:
                         st.dataframe(st.session_state.matched_df[['name']].rename(columns={'name': '姓名'}))
                     else:
                         st.write("没有信息完全一致的人员。")
 
-                with st.expander(f"查看 {only_1_count} 条仅存在于 '{st.session_state.df1_name}' 的名单"): # [界面修正] 移除符号
+                with st.expander(f"查看 {only_1_count} 条仅存在于 '{st.session_state.df1_name}' 的名单"):
                     if not st.session_state.in_file1_only.empty:
                         display_cols_1 = ['name'] + [c for c in cols_to_map if f"{c}_1" in st.session_state.in_file1_only.columns]
                         display_df_1 = st.session_state.in_file1_only[[f"{c}_1" if c != 'name' else 'name' for c in display_cols_1]]
@@ -421,7 +421,7 @@ def run_comparison_app():
                     else:
                         st.write("没有人员。")
 
-                with st.expander(f"查看 {only_2_count} 条仅存在于 '{st.session_state.df2_name}' 的名单"): # [界面修正] 移除符号
+                with st.expander(f"查看 {only_2_count} 条仅存在于 '{st.session_state.df2_name}' 的名单"):
                     if not st.session_state.in_file2_only.empty:
                         display_cols_2 = ['name'] + [c for c in cols_to_map if f"{c}_2" in st.session_state.in_file2_only.columns]
                         display_df_2 = st.session_state.in_file2_only[[f"{c}_2" if c != 'name' else 'name' for c in display_cols_2]]
@@ -444,7 +444,7 @@ def run_comparison_app():
                         st.info("两个文件中没有共同的人员可供进行细节比对。")
 
         st.divider()
-        st.header("原始数据预览 (点击比对后会按姓名排序)")
+        st.header("原始数据预览")
         c1, c2 = st.columns(2)
         with c1:
             st.caption(f"文件 1: {st.session_state.df1_name}")
@@ -457,13 +457,15 @@ def run_comparison_app():
 # --- APP 3: Excel 报告分析器 ---
 # ==============================================================================
 def run_analyzer_app():
-    """Contains all logic and UI for the Excel Report Analyzer."""
-    st.title("炼狱金陵劳工必修剑谱 - 报告分析器")
+    """ [关键修正] 完全按照用户提供的代码恢复此应用 """
+    st.title("炼狱金陵/金陵至尊必修剑谱 - 报告分析器")
     st.markdown("---伯爵酒店团队报表分析工具---")
 
     uploaded_files = st.file_uploader("请上传您的 Excel 报告文件 (.xlsx)", type=["xlsx"], accept_multiple_files=True, key="analyzer_uploader")
 
     if uploaded_files:
+        st.subheader("分析结果")
+        
         temp_dir = "./temp_uploaded_files"
         if not os.path.exists(temp_dir):
             os.makedirs(temp_dir)
@@ -486,32 +488,33 @@ def run_analyzer_app():
 
         if st.button("开始分析"):
             with st.spinner("正在分析中，请稍候..."):
-                st.subheader("分析结果")
                 summaries, unknown_codes = analyze_reports_ultimate(file_paths)
             
             for summary in summaries:
-                st.markdown(summary)
+                st.write(summary)
 
             if unknown_codes:
                 st.subheader("侦测到的未知房型代码 (请检查是否需要更新规则)")
-                st.info("这是模拟数据，用以展示功能。")
                 for code, count in unknown_codes.items():
                     st.write(f"代码: '{code}' (出现了 {count} 次)")
             
+            # Clean up temporary files and directory
             for f_path in file_paths:
                 try:
                     os.remove(f_path)
-                except OSError as e:
-                    st.warning(f"Error removing temp file {f_path}: {e}")
+                except OSError: # More specific exception
+                    pass # Silently ignore if file is already gone
             try:
-                os.rmdir(temp_dir)
-            except OSError as e:
-                st.warning(f"Error removing temp directory {temp_dir}: {e}")
+                if not os.listdir(temp_dir):
+                    os.rmdir(temp_dir)
+            except OSError:
+                pass
+
     else:
         st.info("请上传一个或多个 Excel 文件以开始分析。")
 
     st.markdown("""
-    ---
+    --- 
     #### 使用说明：
     1. 点击 "Browse files" 上传您的 Excel 报告。可以同时上传多个文件。
     2. 文件上传后，点击 "开始分析" 按钮。
@@ -555,7 +558,6 @@ def process_data(uploaded_file):
 
     # 在所有转换完成后，一次性删除任何包含空值的关键行
     df.dropna(subset=['到达', '离开', '房价', '房数', '房类'], inplace=True)
-    df = df[df['离开'] > df['到达']].copy()
     
     # 将房数转为整数，确保后续计算正确
     df['房数'] = df['房数'].astype(int)
@@ -575,25 +577,27 @@ def process_data(uploaded_file):
     df['楼层'] = df['房类'].map(room_to_building)
     
     # [关键修正] 使用 normalize() 来精确计算入住天数（午夜之差）
+    # 即使是当天入住当天离开，只要跨过0点（比如23点到次日1点），也算1天
     df['入住天数'] = (df['离开'].dt.normalize() - df['到达'].dt.normalize()).dt.days
-    
-    df.dropna(subset=['入住天数'], inplace=True)
-    df = df[df['入住天数'] > 0]
-    
-    if df.empty:
-        return pd.DataFrame(), pd.DataFrame()
 
-    df_repeated = df.loc[df.index.repeat(df['入住天数'])]
+    # [关键修正] 将 > 0 改为 >= 0，以包含当天入住当天离开的“日用房”用于到店统计
+    df_for_arrivals = df.copy()
+    df_for_stays = df[df['入住天数'] > 0].copy()
+    
+    if df_for_stays.empty:
+        return df_for_arrivals, pd.DataFrame()
+
+    df_repeated = df_for_stays.loc[df_for_stays.index.repeat(df_for_stays['入住天数'])]
     date_offset = df_repeated.groupby(level=0).cumcount()
     df_repeated['住店日'] = df_repeated['到达'].dt.normalize() + pd.to_timedelta(date_offset, unit='D')
     expanded_df = df_repeated.drop(columns=['到达', '离开', '入住天数']).reset_index(drop=True)
     
-    return df, expanded_df.copy()
+    return df_for_arrivals, expanded_df.copy()
 
 
 def run_data_analysis_app():
     """重制版酒店数据分析应用，支持动态价格矩阵和每日到店统计。"""
-    st.title("炼狱金陵劳工必修剑谱 - 数据分析驾驶舱")
+    st.title("炼狱金陵/金陵至尊必修剑谱 - 数据分析驾驶舱")
     
     uploaded_file = st.file_uploader("上传您的Excel文件", type=["xlsx", "xls"], key="data_analysis_uploader")
 
@@ -663,43 +667,48 @@ def run_data_analysis_app():
                 except ValueError:
                     st.error("住店日期格式不正确，请输入 YYYY/MM/DD 格式，并用逗号分隔。")
                     st.stop()
-
+            
             all_market_codes = sorted(original_df['市场码'].dropna().unique())
             selected_market_codes = st.multiselect("选择市场码 (可多选)", options=all_market_codes, default=all_market_codes)
             
-            price_bins_str = st.text_input("输入自定义价格区间 (例如: <400, 400-900, >900)", "<400, 400-480, 481-500, 501-550, 551-699, >700")
+            # [关键修正] 为两栋楼分别创建价格区间输入框
+            st.subheader("自定义价格区间")
+            col1, col2 = st.columns(2)
+            with col1:
+                price_bins_jinling_str = st.text_input("金陵楼价格区间", "<400, 400-480, 481-500, 501-550, 551-699, >700")
+            with col2:
+                price_bins_yatal_str = st.text_input("亚太楼价格区间", "<500, 501-600, 601-700, >700")
 
-            try:
+            def parse_price_bins(price_bins_str):
                 if not price_bins_str.strip():
-                    st.warning("请输入价格区间。")
-                    st.stop()
-
+                    return None, None
                 intervals = []
                 for item in price_bins_str.split(','):
                     item = item.strip()
                     if item.startswith('<'):
                         upper = int(re.search(r'\d+', item).group())
-                        intervals.append({'lower': float('-inf'), 'upper': upper, 'label': f'<{upper+1}'}) # Use < instead of <=
+                        intervals.append({'lower': float('-inf'), 'upper': upper, 'label': f'<{upper+1}'})
                     elif item.startswith('>'):
                         lower = int(re.search(r'\d+', item).group())
-                        intervals.append({'lower': lower, 'upper': float('inf'), 'label': f'>{lower-1}'}) # Use > instead of >=
+                        intervals.append({'lower': lower, 'upper': float('inf'), 'label': f'>{lower-1}'})
                     elif '-' in item:
                         parts = item.split('-')
                         lower, upper = int(parts[0]), int(parts[1])
                         if lower >= upper:
-                            st.error(f"价格区间 '{item}' 无效：下限必须小于上限。")
-                            st.stop()
+                            raise ValueError(f"价格区间 '{item}' 无效：下限必须小于上限。")
                         intervals.append({'lower': lower, 'upper': upper, 'label': f'{lower}-{upper}'})
                     else:
                         raise ValueError(f"无法解析区间 '{item}'")
-
                 intervals.sort(key=lambda x: x['lower'])
-
                 bins = [d['lower'] for d in intervals] + [intervals[-1]['upper']]
                 labels = [d['label'] for d in intervals]
+                return bins, labels
 
+            try:
+                bins_jinling, labels_jinling = parse_price_bins(price_bins_jinling_str)
+                bins_yatal, labels_yatal = parse_price_bins(price_bins_yatal_str)
             except (ValueError, IndexError, AttributeError) as e:
-                st.error(f"价格区间格式不正确。请使用 '<X', '>Y', 'A-B' 格式，并用逗号分隔。错误: {e}")
+                st.error(f"价格区间格式不正确。错误: {e}")
                 st.stop()
 
             if selected_stay_dates and selected_market_codes:
@@ -709,17 +718,15 @@ def run_data_analysis_app():
                 ].copy()
 
                 if not matrix_df.empty:
-                    # [逻辑修正] right=True 确保 400-500 区间包含 500
-                    matrix_df['价格区间'] = pd.cut(
-                        matrix_df['房价'], bins=bins, labels=labels, right=True, include_lowest=True
-                    )
-                    
                     buildings = sorted(matrix_df['楼层'].unique())
                     for building in buildings:
-                        st.subheader(f"{building} - 在住房间分布") # [界面修正] 移除符号
+                        st.subheader(f"{building} - 在住房间分布")
                         building_df = matrix_df[matrix_df['楼层'] == building]
                         
-                        if not building_df.empty:
+                        bins, labels = (bins_jinling, labels_jinling) if building == "金陵楼" else (bins_yatal, labels_yatal)
+                        
+                        if not building_df.empty and bins and labels:
+                            building_df['价格区间'] = pd.cut(building_df['房价'], bins=bins, labels=labels, right=True, include_lowest=True)
                             pivot_table = pd.pivot_table(
                                 building_df.dropna(subset=['价格区间']),
                                 index=building_df['住店日'].dt.date,
@@ -735,7 +742,7 @@ def run_data_analysis_app():
                             else:
                                  st.info(f"在 {building} 中，所选条件下的所有房价都不在您定义的价格区间内。")
                         else:
-                            st.info(f"在 {building} 中，没有找到符合所选条件的在住记录。")
+                            st.info(f"在 {building} 中，没有找到符合所选条件的在住记录或未设置价格区间。")
                 else:
                     st.warning(f"在所选日期和市场码范围内没有找到在住记录。")
 
@@ -758,7 +765,6 @@ def check_password():
             st.form_submit_button("登录", on_click=password_entered)
 
     def password_entered():
-        # [关键更新] 从 st.secrets 读取凭证
         app_username = st.secrets.app_credentials.get("username")
         app_password = st.secrets.app_credentials.get("password")
         
@@ -769,7 +775,6 @@ def check_password():
         else:
             st.session_state["password_correct"] = False
 
-    # [关键更新] 检查 st.secrets
     if "app_credentials" not in st.secrets or not st.secrets.app_credentials.get("username") or not st.secrets.app_credentials.get("password"):
         st.error("错误：应用的用户名或密码未在 Streamlit Secrets 中正确配置。")
         return False
@@ -779,18 +784,17 @@ def check_password():
 
     login_form()
     if "password_correct" in st.session_state and not st.session_state.password_correct:
-        st.error("用户名或密码不正确。") # [界面修正] 移除符号
+        st.error("用户名或密码不正确。")
     return False
 
 
 # --- 主应用路由器 ---
-st.set_page_config(layout="wide", page_title="炼狱金陵劳工必修剑谱")
+st.set_page_config(layout="wide", page_title="炼狱金陵/金陵至尊必修剑谱")
 
-# [关键安全更新] 将密码检查移至全局，保护所有应用
 if check_password():
     with st.sidebar:
         app_choice = option_menu(
-            menu_title="炼狱金陵劳工必修剑谱",
+            menu_title="炼狱金陵/金陵至尊必修剑谱",
             options=["OCR 工具", "比对平台", "报告分析器", "数据分析"],
             icons=["camera-reels", "columns-gap", "file-earmark-bar-graph", "bar-chart-line"],
             menu_icon="tools",
