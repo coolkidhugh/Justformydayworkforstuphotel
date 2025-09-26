@@ -226,21 +226,31 @@ def run_ocr_app_detailed():
         info = st.session_state['booking_info_detailed']
         if 'raw_ocr_text_detailed' in st.session_state:
             st.markdown("---")
-            st.subheader("原始识别结果 (供参考)")
-            st.text_area("您可以从这里复制内容来修正下面的表格", st.session_state['raw_ocr_text_detailed'], height=200)
+            # [关键修正] 优化原始文本显示
+            with st.expander("点击查看/隐藏原始识别文本"):
+                st.code(st.session_state['raw_ocr_text_detailed'])
         
         st.markdown("---")
         st.subheader("核对与编辑信息")
 
-        # [关键升级] UI 调整以适应多日期
         info['team_name'] = st.text_input("团队名称", value=info['team_name'])
         
         for i, group in enumerate(info['booking_groups']):
-            st.markdown(f"**日期范围: {group['arrival_raw']} - {group['departure_raw']}**")
+            st.markdown("---")
+            # [关键修正] 允许修改日期范围
+            col1, col2 = st.columns(2)
+            with col1:
+                new_arrival = st.text_input("到达日期", value=group['arrival_raw'], key=f"arrival_{i}")
+                info['booking_groups'][i]['arrival_raw'] = new_arrival
+            with col2:
+                new_departure = st.text_input("离开日期", value=group['departure_raw'], key=f"departure_{i}")
+                info['booking_groups'][i]['departure_raw'] = new_departure
+
             # 使用 data_editor 允许修改
-            edited_df = st.data_editor(group['dataframe'], key=f"editor_{i}", num_rows="dynamic")
+            edited_df = st.data_editor(group['dataframe'], key=f"editor_{i}", num_rows="dynamic", use_container_width=True)
             info['booking_groups'][i]['dataframe'] = edited_df # 将修改保存回 session state
         
+        st.markdown("---")
         selected_salesperson = st.selectbox("选择对应销售", options=SALES_LIST)
 
         if st.button("生成最终话术"):
