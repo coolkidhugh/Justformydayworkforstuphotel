@@ -41,10 +41,10 @@ def analyze_reports_ultimate(file_paths):
 
 
 # ==============================================================================
-# --- APP 1: OCR 销售通知生成器 ---
+# --- APP 1: OCR 工具 (明细版) ---
 # ==============================================================================
-def run_ocr_app():
-    """Contains all logic and UI for the OCR Sales Notification Generator."""
+def run_ocr_app_detailed():
+    """Contains all logic and UI for the Detailed OCR Sales Notification Generator."""
 
     # --- 配置信息 ---
     TEAM_TYPE_MAP = { "CON": "会议团", "FIT": "散客团", "WA": "婚宴团" }
@@ -189,7 +189,7 @@ def run_ocr_app():
         return f"新增{team_type} {team_name} {full_room_details} {salesperson}销售通知"
 
     # --- Streamlit 主应用 ---
-    st.title("炼狱金陵/金陵至尊必修剑谱 - OCR 工具")
+    st.title("炼狱金陵/金陵至尊必修剑谱 - OCR 工具 (明细版)")
     
     st.markdown("""
     **全新工作流**：
@@ -198,35 +198,35 @@ def run_ocr_app():
     3.  **选择销售并生成话术**：确认无误后，选择销售员并生成最终话术。
     """)
 
-    uploaded_file = st.file_uploader("上传图片文件", type=["png", "jpg", "jpeg", "bmp"], key="ocr_uploader")
+    uploaded_file = st.file_uploader("上传图片文件", type=["png", "jpg", "jpeg", "bmp"], key="ocr_uploader_detailed")
 
     if uploaded_file is not None:
         image = Image.open(uploaded_file)
         st.image(image, caption="上传的图片", width=300)
 
         if st.button("从图片提取信息 (阿里云 OCR)"):
-            if 'booking_info' in st.session_state:
-                del st.session_state['booking_info']
-            if 'raw_ocr_text' in st.session_state:
-                del st.session_state['raw_ocr_text']
+            if 'booking_info_detailed' in st.session_state:
+                del st.session_state['booking_info_detailed']
+            if 'raw_ocr_text_detailed' in st.session_state:
+                del st.session_state['raw_ocr_text_detailed']
             
             with st.spinner('正在调用阿里云 OCR API 识别中...'):
                 ocr_text = get_ocr_text_from_aliyun(image)
                 if ocr_text:
-                    st.session_state['raw_ocr_text'] = ocr_text
+                    st.session_state['raw_ocr_text_detailed'] = ocr_text
                     result = extract_booking_info(ocr_text)
                     if isinstance(result, str):
                         st.warning(result)
                     else:
-                        st.session_state['booking_info'] = result
+                        st.session_state['booking_info_detailed'] = result
                         st.success("信息提取成功！请在下方核对。")
 
-    if 'booking_info' in st.session_state:
-        info = st.session_state['booking_info']
-        if 'raw_ocr_text' in st.session_state:
+    if 'booking_info_detailed' in st.session_state:
+        info = st.session_state['booking_info_detailed']
+        if 'raw_ocr_text_detailed' in st.session_state:
             st.markdown("---")
             st.subheader("原始识别结果 (供参考)")
-            st.text_area("您可以从这里复制内容来修正下面的表格", st.session_state['raw_ocr_text'], height=200)
+            st.text_area("您可以从这里复制内容来修正下面的表格", st.session_state['raw_ocr_text_detailed'], height=200)
         
         st.markdown("---")
         st.subheader("核对与编辑信息")
@@ -827,26 +827,21 @@ if check_password():
     with st.sidebar:
         app_choice = option_menu(
             menu_title="炼狱金陵/金陵至尊必修剑谱",
-            options=["OCR 工具", "比对平台", "报告分析器", "数据分析"],
+            options=["OCR 工具 (明细版)", "比对平台", "报告分析器", "数据分析"],
             icons=["camera-reels", "columns-gap", "file-earmark-bar-graph", "bar-chart-line"],
             menu_icon="tools",
-            default_index=3,
+            default_index=0,
         )
 
     st.sidebar.markdown("---")
     st.sidebar.info("这是一个将多个工具集成到一起的应用。")
 
-    if app_choice == "OCR 工具":
-        run_ocr_app()
+    if app_choice == "OCR 工具 (明细版)":
+        run_ocr_app_detailed()
     elif app_choice == "比对平台":
         run_comparison_app()
     elif app_choice == "报告分析器":
         run_analyzer_app()
     elif app_choice == "数据分析":
         run_data_analysis_app()
-" of the Canvas and am asking the following query:
-bro 我明白了
-之前的那个版本再给我一下 可以显示不同日期 话术也分开的
-这个版本也很好 我也留着 两个版本都很好 
-你给我再加一个选项 ocr工具2.0
 
