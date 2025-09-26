@@ -179,8 +179,11 @@ def run_ocr_app_detailed():
         for group in booking_groups:
             date_range_string = format_date_range(group['arrival_raw'], group['departure_raw'])
             
+            # [关键修正] 排序后再生成话术
+            sorted_df = group['dataframe'].sort_values(by='房数', ascending=True)
+            
             rooms_list = []
-            for _, row in group['dataframe'].iterrows():
+            for _, row in sorted_df.iterrows():
                 rooms_list.append(f"{row['房数']}{row['房型']}({row['定价']})")
                 
             room_string = "".join(rooms_list) # 用空字符串连接，更紧凑
