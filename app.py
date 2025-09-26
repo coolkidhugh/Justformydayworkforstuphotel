@@ -281,9 +281,13 @@ def run_comparison_app():
         if 'room_type' in standard_df.columns:
             standard_df['room_type'] = standard_df['room_type'].astype(str).apply(forensic_clean_text)
             if room_type_equivalents:
-                cleaned_equivalents = {forensic_clean_text(k): [forensic_clean_text(val) for val in v] for k, v in room_type_equivalents.items()}
-                reverse_map = {val: key for key, values in cleaned_equivalents.items() for val in values}
-                standard_df['room_type'] = standard_df['room_type'].replace(reverse_map)
+                # [关键修正] 创建一个更直接的映射字典
+                # { '大床房': 'King Room', '标准间': 'Twin Room' }
+                direct_map = {}
+                for key, values in room_type_equivalents.items():
+                    for value in values:
+                        direct_map[forensic_clean_text(value)] = forensic_clean_text(key)
+                standard_df['room_type'] = standard_df['room_type'].replace(direct_map)
 
         if 'price' in standard_df.columns:
             standard_df['price'] = pd.to_numeric(standard_df['price'].astype(str).str.strip(), errors='coerce')
@@ -363,8 +367,8 @@ def run_comparison_app():
                     st.session_state.ran_comparison = True
                     
                     # [关键修正] 将 room_type_equivalents 传递给正确的函数调用
-                    std_df1 = process_and_standardize(st.session_state.df1.sort_values(by=mapping['file1']['name'], ignore_index=True), mapping['file1'], case_insensitive)
-                    std_df2 = process_and_standardize(st.session_state.df2.sort_values(by=mapping['file2']['name'], ignore_index=True), mapping['file2'], case_insensitive, room_type_equivalents=room_type_equivalents)
+                    std_df1 = process_and_standardize(st.session_state.df1.copy(), mapping['file1'], case_insensitive)
+                    std_df2 = process_and_standardize(st.session_state.df2.copy(), mapping['file2'], case_insensitive, room_type_equivalents=room_type_equivalents)
 
                     merged_df = pd.merge(std_df1, std_df2, on='name', how='outer', suffixes=('_1', '_2'))
                     cols1_for_check = [f"{c}_1" for c in std_df1.columns if c != 'name']
@@ -683,9 +687,11 @@ def run_data_analysis_app():
             st.subheader("自定义价格区间")
             col1, col2 = st.columns(2)
             with col1:
-                price_bins_jinling_str = st.text_input("金陵楼价格区间", "<400, 400-480, 481-500, 501-550, 551-699, >700")
+                # [关键修正] 更新默认价格区间
+                price_bins_jinling_str = st.text_input("金陵楼价格区间", "<401, 401-480, 481-500, 501-550, 551-599, >599")
             with col2:
-                price_bins_yatal_str = st.text_input("亚太楼价格区间", "<500, 501-600, 601-700, >700")
+                # [关键修正] 更新默认价格区间
+                price_bins_yatal_str = st.text_input("亚太楼价格区间", "<501, 501-600, 601-699, 700-749, 750-799, >799")
 
             def parse_price_bins(price_bins_str):
                 if not price_bins_str.strip():
@@ -695,10 +701,10 @@ def run_data_analysis_app():
                     item = item.strip()
                     if item.startswith('<'):
                         upper = int(re.search(r'\d+', item).group())
-                        intervals.append({'lower': float('-inf'), 'upper': upper, 'label': f'<{upper+1}'})
+                        intervals.append({'lower': float('-inf'), 'upper': upper, 'label': f'< {upper}'})
                     elif item.startswith('>'):
                         lower = int(re.search(r'\d+', item).group())
-                        intervals.append({'lower': lower, 'upper': float('inf'), 'label': f'>{lower-1}'})
+                        intervals.append({'lower': lower, 'upper': float('inf'), 'label': f'> {lower}'})
                     elif '-' in item:
                         parts = item.split('-')
                         lower, upper = int(parts[0]), int(parts[1])
