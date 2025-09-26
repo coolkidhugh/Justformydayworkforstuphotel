@@ -122,13 +122,18 @@ def run_ocr_app():
         if not all_dates:
             return "错误：无法识别出任何有效日期。"
         
+        # 寻找最早和最晚的日期作为核心时间范围
         unique_dates = sorted(list(set(all_dates)))
         arrival_date_str = unique_dates[0]
         departure_date_str = unique_dates[-1]
 
         room_codes_pattern_str = '|'.join(ALL_ROOM_CODES)
-        room_finder_pattern = re.compile(f'({room_codes_pattern_str})\\s+(\\d+)', re.IGNORECASE)
-        found_rooms = room_finder_pattern.findall(ocr_text)
+        # 匹配 房型 + 房数，忽略中间的其他内容
+        room_finder_pattern = re.compile(f'({room_codes_pattern_str}).*?(\\d+)\\s+房', re.IGNORECASE | re.DOTALL)
+        # 更通用的匹配方式，找到房型和它后面最近的数字
+        line_by_line_pattern = re.compile(f'({room_codes_pattern_str}).*?(\\d+)', re.IGNORECASE)
+
+        found_rooms = line_by_line_pattern.findall(ocr_text)
         
         if not found_rooms:
             return "错误：无法识别出任何有效的房型代码和数量。"
@@ -145,7 +150,7 @@ def run_ocr_app():
             formatted_departure = departure_date_str
             
         df = pd.DataFrame(room_details, columns=['房型', '房数'])
-        # Group and sum rooms in case the same room type appears on multiple lines
+        # 汇总所有识别到的房间
         df = df.groupby('房型')['房数'].sum().reset_index()
 
         return {
@@ -162,6 +167,7 @@ def run_ocr_app():
         
         rooms_list = []
         for _, row in room_df.iterrows():
+            # 假设价格信息现在不强求，所以话术中去掉价格括号
             rooms_list.append(f"{row['房数']}{row['房型']}")
             
         room_string = " ".join(rooms_list)
