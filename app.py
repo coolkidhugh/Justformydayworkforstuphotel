@@ -41,7 +41,7 @@ def analyze_reports_ultimate(file_paths):
 
 
 # ==============================================================================
-# --- APP 1: OCR 工具 (明细版) ---
+# --- APP 1: OCR 工具 (明细版 V2 - 三步审核流程) ---
 # ==============================================================================
 def run_ocr_app_detailed():
     """Contains all logic and UI for the Detailed OCR Sales Notification Generator."""
@@ -192,52 +192,49 @@ def run_ocr_app_detailed():
     # --- Streamlit 主应用 ---
     st.title("炼狱金陵/金陵至尊必修剑谱 - OCR 工具 (明细版)")
     
-    st.markdown("""
-    **全新工作流**：
-    1.  **上传图片，点击提取**：程序将智能识别并分组不同的入住日期。
-    2.  **自动填充与人工修正**：程序会尝试自动填充。您可以**参照原始文本**，直接在表格中修改。
-    3.  **选择销售并生成话术**：确认无误后，选择销售员并生成最终话术。
-    """)
+    # [关键修正] 引入多步骤流程控制
+    if 'ocr_step' not in st.session_state:
+        st.session_state.ocr_step = 0 # 0: initial, 1: text review, 2: table review
 
     uploaded_file = st.file_uploader("上传图片文件", type=["png", "jpg", "jpeg", "bmp"], key="ocr_uploader_detailed")
 
     if uploaded_file is not None:
-        image = Image.open(uploaded_file)
-        st.image(image, caption="上传的图片", width=300)
-
-        if st.button("从图片提取信息 (阿里云 OCR)"):
-            if 'booking_info_detailed' in st.session_state:
-                del st.session_state['booking_info_detailed']
-            if 'raw_ocr_text_detailed' in st.session_state:
-                del st.session_state['raw_ocr_text_detailed']
-            
+        if st.button("1. 从图片提取文本"):
+            st.session_state.ocr_step = 1
             with st.spinner('正在调用阿里云 OCR API 识别中...'):
-                ocr_text = get_ocr_text_from_aliyun(image)
+                ocr_text = get_ocr_text_from_aliyun(Image.open(uploaded_file))
                 if ocr_text:
-                    st.session_state['raw_ocr_text_detailed'] = ocr_text
-                    result = extract_booking_info(ocr_text)
-                    if isinstance(result, str):
-                        st.warning(result)
-                    else:
-                        st.session_state['booking_info_detailed'] = result
-                        st.success("信息提取成功！请在下方核对。")
-
-    if 'booking_info_detailed' in st.session_state:
-        info = st.session_state['booking_info_detailed']
-        if 'raw_ocr_text_detailed' in st.session_state:
-            st.markdown("---")
-            # [关键修正] 优化原始文本显示
-            with st.expander("点击查看/隐藏原始识别文本"):
-                st.text_area("原始文本", value=st.session_state['raw_ocr_text_detailed'], height=250)
-        
+                    st.session_state.raw_ocr_text = ocr_text
+                    st.success("文本提取成功！请在下方审核并修正。")
+                else:
+                    st.session_state.ocr_step = 0
+    
+    # 步骤1：审核原始文本
+    if st.session_state.ocr_step >= 1:
         st.markdown("---")
-        st.subheader("核对与编辑信息")
+        st.subheader("第 1 步：审核原始文本")
+        edited_text = st.text_area("您可以直接在此处修改 OCR 识别结果：", value=st.session_state.get('raw_ocr_text', ''), height=250)
+        st.session_state.edited_ocr_text = edited_text
 
-        info['team_name'] = st.text_input("团队名称", value=info['team_name'])
+        if st.button("2. 解析文本生成表格"):
+            result = extract_booking_info(st.session_state.edited_ocr_text)
+            if isinstance(result, str):
+                st.warning(result)
+            else:
+                st.session_state.booking_info = result
+                st.session_state.ocr_step = 2
+                st.success("文本解析成功！请在下方审核表格。")
+
+    # 步骤2：审核表格
+    if st.session_state.ocr_step >= 2:
+        st.markdown("---")
+        st.subheader("第 2 步：审核结构化表格")
+        info = st.session_state.booking_info
         
-        for i, group in enumerate(info['booking_groups']):
+        info['team_name'] = st.text_input("团队名称", value=info.get('team_name', ''))
+        
+        for i, group in enumerate(info.get('booking_groups', [])):
             st.markdown("---")
-            # [关键修正] 允许修改日期范围
             col1, col2 = st.columns(2)
             with col1:
                 new_arrival = st.text_input("到达日期", value=group['arrival_raw'], key=f"arrival_{i}")
@@ -246,11 +243,11 @@ def run_ocr_app_detailed():
                 new_departure = st.text_input("离开日期", value=group['departure_raw'], key=f"departure_{i}")
                 info['booking_groups'][i]['departure_raw'] = new_departure
 
-            # 使用 data_editor 允许修改
             edited_df = st.data_editor(group['dataframe'], key=f"editor_{i}", num_rows="dynamic", use_container_width=True)
-            info['booking_groups'][i]['dataframe'] = edited_df # 将修改保存回 session state
+            info['booking_groups'][i]['dataframe'] = edited_df
         
         st.markdown("---")
+        st.subheader("第 3 步：生成最终话术")
         selected_salesperson = st.selectbox("选择对应销售", options=SALES_LIST)
 
         if st.button("生成最终话术"):
@@ -258,6 +255,7 @@ def run_ocr_app_detailed():
             st.subheader("生成成功！")
             st.success(final_speech)
             st.code(final_speech, language=None)
+
 
 # ==============================================================================
 # --- APP 2: 多维审核比对平台 ---
