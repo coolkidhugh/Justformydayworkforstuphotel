@@ -49,12 +49,13 @@ def run_ocr_app_detailed():
     # --- 配置信息 ---
     TEAM_TYPE_MAP = { "CON": "会议团", "FIT": "散客团", "WA": "婚宴团" }
     DEFAULT_TEAM_TYPE = "旅游团"
+    # [关键修正] 扩充房型代码列表
     ALL_ROOM_CODES = [
         "DETN", "DKN", "DQN", "DQS", "DSKN", "DSTN", "DTN", "EKN", "EKS", "ESN", "ESS",
         "ETN", "ETS", "FSN", "FSB", "FSC", "OTN", "PSA", "PSB", "RSN", "SKN",
         "SQN", "SQS", "SSN", "SSS", "STN", "STS", "JDEN", "JDKN", "JDKS", "JEKN",
         "JESN", "JESS", "JETN", "JETS", "JKN", "JLKN", "JTN", "JTS", "PSC", "PSD",
-        "VCKN", "VCKD", "SITN", "JEN", "JIS", "JTIN"
+        "VCKN", "VCKD", "SITN", "JEN", "JIS", "JTIN", "SON", "DON" # 添加了 SON 和 DON
     ]
     SALES_LIST = ["陈洪贞", "倪斌", "刘亚炜", "黄婷", "蒋思源", "黄泽浩", "蒋光聪", "吴皓宇", "潘茜", "柏方"]
 
