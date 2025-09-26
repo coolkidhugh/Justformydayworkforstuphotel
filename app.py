@@ -56,6 +56,8 @@ def run_ocr_app():
         "JESN", "JESS", "JETN", "JETS", "JKN", "JLKN", "JTN", "JTS", "PSC", "PSD",
         "VCKN", "VCKD", "SITN", "JEN", "JIS", "JTIN"
     ]
+    SALES_LIST = ["陈洪贞", "倪斌", "刘亚炜", "黄婷", "蒋思源", "黄泽浩", "蒋光聪", "吴皓宇", "潘茜", "柏方"]
+
 
     # --- OCR 引擎函数 (阿里云版) ---
     def get_ocr_text_from_aliyun(image: Image.Image) -> str:
@@ -106,7 +108,7 @@ def run_ocr_app():
             st.error(f"调用阿里云 OCR API 失败: {e}")
             return None
 
-    # --- [关键升级] 信息提取与格式化 (支持多日期) ---
+    # --- [关键修正] 信息提取与格式化 (回归经典版) ---
     def extract_booking_info(ocr_text: str):
         team_name_pattern = re.compile(r'((?:CON|FIT|WA)\d+\s*/\s*[\u4e00-\u9fa5\w]+)', re.IGNORECASE)
         team_name_match = team_name_pattern.search(ocr_text)
@@ -115,81 +117,64 @@ def run_ocr_app():
         team_prefix = team_name[:3].upper()
         team_type = TEAM_TYPE_MAP.get(team_prefix, DEFAULT_TEAM_TYPE)
 
-        lines = ocr_text.split('\n')
-        date_groups = {} 
-
-        line_pattern = re.compile(
-            f'({"|".join(ALL_ROOM_CODES)})'  # Group 1: Room Type
-            r'\s+(\d+)\s+'                    # Group 2: Room Count
-            r'.*?'                           # Non-greedy anything
-            r'(\d{1,2}/\d{2})'               # Group 3: Arrival Date
-            r'.*?'                           # Non-greedy anything
-            r'(\d{1,2}/\d{2})'               # Group 4: Departure Date
-        , re.IGNORECASE | re.DOTALL)
-
-        for line in lines:
-            if not line.strip():
-                continue
-            
-            match = line_pattern.search(line)
-            if match:
-                room_type, room_count, arrival, departure = match.groups()
-                date_key = (arrival, departure)
-                if date_key not in date_groups:
-                    date_groups[date_key] = []
-                date_groups[date_key].append((room_type.upper(), int(room_count)))
+        date_pattern = re.compile(r'(\d{1,2}/\d{2})')
+        all_dates = date_pattern.findall(ocr_text)
+        if not all_dates:
+            return "错误：无法识别出任何有效日期。"
         
-        if not date_groups:
-            return "错误：无法从图片中识别出任何有效的房型和日期组合。"
+        unique_dates = sorted(list(set(all_dates)))
+        arrival_date_str = unique_dates[0]
+        departure_date_str = unique_dates[-1]
 
-        result_groups = []
-        for (arr, dep), rooms in date_groups.items():
-            try:
-                arr_month, arr_day = map(int, arr.split('/'))
-                dep_month, dep_day = map(int, dep.split('/'))
-                formatted_arrival = f"{arr_month}月{arr_day}日"
-                formatted_departure = f"{dep_month}月{dep_day}日"
-            except (ValueError, IndexError):
-                formatted_arrival = arr
-                formatted_departure = dep
+        room_codes_pattern_str = '|'.join(ALL_ROOM_CODES)
+        room_finder_pattern = re.compile(f'({room_codes_pattern_str})\\s+(\\d+)', re.IGNORECASE)
+        found_rooms = room_finder_pattern.findall(ocr_text)
+        
+        if not found_rooms:
+            return "错误：无法识别出任何有效的房型代码和数量。"
 
-            df = pd.DataFrame(rooms, columns=['房型', '房数'])
-            result_groups.append({
-                "arrival": formatted_arrival,
-                "departure": formatted_departure,
-                "dataframe": df
-            })
+        room_details = [(room.upper(), int(count)) for room, count in found_rooms]
+
+        try:
+            arr_month, arr_day = map(int, arrival_date_str.split('/'))
+            dep_month, dep_day = map(int, departure_date_str.split('/'))
+            formatted_arrival = f"{arr_month}月{arr_day}日"
+            formatted_departure = f"{dep_month}月{dep_day}日"
+        except (ValueError, IndexError):
+            formatted_arrival = arrival_date_str
+            formatted_departure = departure_date_str
+            
+        df = pd.DataFrame(room_details, columns=['房型', '房数'])
+        # Group and sum rooms in case the same room type appears on multiple lines
+        df = df.groupby('房型')['房数'].sum().reset_index()
 
         return {
             "team_name": team_name,
             "team_type": team_type,
-            "booking_groups": sorted(result_groups, key=lambda x: x['arrival'])
+            "arrival_date": formatted_arrival,
+            "departure_date": formatted_departure,
+            "dataframe": df
         }
 
-    # --- [关键升级] 话术生成 (支持多日期) ---
-    def format_notification_speech(team_name, team_type, booking_groups):
-        speech_parts = []
-        for group in booking_groups:
-            date_range_string = f"{group['arrival']}-{group['departure']}"
+    # --- [关键修正] 话术生成 (增加销售员) ---
+    def format_notification_speech(team_name, team_type, arrival_date, departure_date, room_df, salesperson):
+        date_range_string = f"{arrival_date}-{departure_date}"
+        
+        rooms_list = []
+        for _, row in room_df.iterrows():
+            rooms_list.append(f"{row['房数']}{row['房型']}")
             
-            rooms_list = []
-            for _, row in group['dataframe'].iterrows():
-                rooms_list.append(f"{row['房数']}{row['房型']}")
-                
-            room_string = " ".join(rooms_list)
-            speech_parts.append(f"{date_range_string} {room_string}")
-            
-        full_room_details = "；".join(speech_parts)
-        return f"新增{team_type} {team_name} {full_room_details}。销售通知"
+        room_string = " ".join(rooms_list)
+        return f"新增{team_type} {team_name} {date_range_string} {room_string}。{salesperson}销售通知"
 
     # --- Streamlit 主应用 ---
     st.title("炼狱金陵/金陵至尊必修剑谱 - OCR 工具")
     
     st.markdown("""
     **全新工作流**：
-    1.  **上传图片，点击提取**：程序将调用阿里云 OCR 并将**原始识别文本**显示在下方。
-    2.  **自动填充与人工修正**：程序会尝试自动填充结构化信息。您可以**参照原始文本**，直接在表格中修改，确保信息完全准确。
-    3.  **生成话术**：确认无误后，生成最终话术。
+    1.  **上传图片，点击提取**：程序将识别核心信息并汇总所有房间。
+    2.  **自动填充与人工修正**：程序会尝试自动填充。您可以**参照原始文本**，直接在表格中修改。
+    3.  **选择销售并生成话术**：确认无误后，选择销售员并生成最终话术。
     """)
 
     uploaded_file = st.file_uploader("上传图片文件", type=["png", "jpg", "jpeg", "bmp"], key="ocr_uploader")
@@ -223,17 +208,32 @@ def run_ocr_app():
             st.text_area("您可以从这里复制内容来修正下面的表格", st.session_state['raw_ocr_text'], height=200)
         
         st.markdown("---")
-        st.subheader("核对信息")
+        st.subheader("核对与编辑信息")
 
-        # [关键升级] UI 调整以适应多日期
-        info['team_name'] = st.text_input("团队名称", value=info['team_name'])
-        
-        for i, group in enumerate(info['booking_groups']):
-            st.markdown(f"**日期范围 {i+1}: {group['arrival']} - {group['departure']}**")
-            st.dataframe(group['dataframe'])
+        # [关键修正] UI 回归经典版，并增加销售选择
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            info['team_name'] = st.text_input("团队名称", value=info['team_name'])
+        with col2:
+            info['arrival_date'] = st.text_input("到达日期", value=info['arrival_date'])
+        with col3:
+            info['departure_date'] = st.text_input("离开日期", value=info['departure_date'])
+
+        st.markdown("##### 房间详情 (可直接在表格中编辑)")
+        edited_df = st.data_editor(info['dataframe'], num_rows="dynamic", use_container_width=True, key="ocr_editor")
+        info['dataframe'] = edited_df # Save edits back to session state
+
+        selected_salesperson = st.selectbox("选择对应销售", options=SALES_LIST)
         
         if st.button("生成最终话术"):
-            final_speech = format_notification_speech(info['team_name'], info['team_type'], info['booking_groups'])
+            final_speech = format_notification_speech(
+                info['team_name'], 
+                info['team_type'], 
+                info['arrival_date'], 
+                info['departure_date'], 
+                info['dataframe'], 
+                selected_salesperson
+            )
             st.subheader("生成成功！")
             st.success(final_speech)
             st.code(final_speech, language=None)
