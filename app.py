@@ -195,7 +195,7 @@ def run_ocr_app_detailed():
         return f"新增{team_type} {team_name} {full_room_details} {salesperson}销售通知"
 
     # --- Streamlit 主应用 ---
-    st.title("炼狱金陵/金陵至尊必修剑谱 - OCR 工具 (明细版)")
+    st.title("炼狱金陵/金陵至尊必修剑谱 - OCR 工具")
     
     # [关键修正] 引入多步骤流程控制
     if 'ocr_step' not in st.session_state:
