@@ -844,6 +844,16 @@ def run_data_analysis_app():
 # ==============================================================================
 # --- 全局函数和主应用路由器 ---
 # ==============================================================================
+# [关键修正] 恢复 to_excel 辅助函数
+@st.cache_data
+def to_excel(df_dict):
+    output = io.BytesIO()
+    with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
+        for sheet_name, df in df_dict.items():
+            df.to_excel(writer, sheet_name=sheet_name)
+    processed_data = output.getvalue()
+    return processed_data
+    
 # --- 登录检查函数 (全局) ---
 def check_password():
     """返回 True 如果用户已登录, 否则返回 False."""
