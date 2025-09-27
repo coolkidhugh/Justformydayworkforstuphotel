@@ -660,20 +660,23 @@ def run_data_analysis_app():
         with st.expander("点击展开或折叠", expanded=True):
             
             # --- 到店统计 ---
-            st.subheader("到店房数统计 (状态: R)")
+            st.subheader("到店房数统计")
+            all_statuses = sorted(original_df['状态'].unique())
+            selected_arrival_statuses = st.multiselect("选择到店状态", options=all_statuses, default=['R'])
+            
             arrival_dates_str = st.text_input(
                 "输入到店日期 (用逗号分隔, 格式: YYYY/MM/DD)", 
                 pd.to_datetime(original_df['到达'].min()).strftime('%Y/%m/%d') if not original_df.empty else ""
             )
             
             arrival_summary = pd.DataFrame() # 初始化为空
-            if arrival_dates_str:
+            if arrival_dates_str and selected_arrival_statuses:
                 try:
                     date_strings = [d.strip() for d in arrival_dates_str.split(',') if d.strip()]
                     selected_arrival_dates = [pd.to_datetime(d, format='%Y/%m/%d').date() for d in date_strings]
                     
                     arrival_df = original_df[
-                        (original_df['状态'] == 'R') & 
+                        (original_df['状态'].isin(selected_arrival_statuses)) & 
                         (original_df['到达'].dt.date.isin(selected_arrival_dates))
                     ].copy()
 
@@ -682,25 +685,27 @@ def run_data_analysis_app():
                         arrival_summary.index.name = "到店日期"
                         st.dataframe(arrival_summary)
                     else:
-                        st.warning(f"在所选日期内没有找到状态为 'R' 的到店记录。")
+                        st.warning(f"在所选日期和状态内没有找到到店记录。")
                 except ValueError:
                     st.error("到店日期格式不正确，请输入 YYYY/MM/DD 格式。")
 
             # --- 离店统计 ---
-            st.subheader("离店房数统计 (状态: R, S, I, O)")
+            st.subheader("离店房数统计")
+            selected_departure_statuses = st.multiselect("选择离店状态", options=all_statuses, default=['R', 'S', 'I', 'O'])
+
             departure_dates_str = st.text_input(
                 "输入离店日期 (用逗号分隔, 格式: YYYY/MM/DD)",
                 pd.to_datetime(original_df['离开'].min()).strftime('%Y/%m/%d') if not original_df.empty else ""
             )
             
             departure_summary = pd.DataFrame() # 初始化为空
-            if departure_dates_str:
+            if departure_dates_str and selected_departure_statuses:
                 try:
                     date_strings = [d.strip() for d in departure_dates_str.split(',') if d.strip()]
                     selected_departure_dates = [pd.to_datetime(d, format='%Y/%m/%d').date() for d in date_strings]
                     
                     departure_df = original_df[
-                        (original_df['状态'].isin(['R', 'S', 'I', 'O'])) & 
+                        (original_df['状态'].isin(selected_departure_statuses)) & 
                         (original_df['离开'].dt.date.isin(selected_departure_dates))
                     ].copy()
 
@@ -709,7 +714,7 @@ def run_data_analysis_app():
                         departure_summary.index.name = "离店日期"
                         st.dataframe(departure_summary)
                     else:
-                        st.warning(f"在所选日期内没有找到状态为 'R', 'S', 'I', 'O' 的离店记录。")
+                        st.warning(f"在所选日期和状态内没有找到离店记录。")
                 except ValueError:
                     st.error("离店日期格式不正确，请输入 YYYY/MM/DD 格式。")
 
@@ -723,7 +728,7 @@ def run_data_analysis_app():
                 
                 excel_data = to_excel(df_to_download)
                 st.download_button(
-                    label="下载到店/离店统计为 Excel",
+                    label="下载统计结果为 Excel",
                     data=excel_data,
                     file_name="arrival_departure_summary.xlsx",
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
