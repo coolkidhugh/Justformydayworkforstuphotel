@@ -17,6 +17,7 @@ try:
     from alibabacloud_ocr_api20210707.client import Client as OcrClient
     from alibabacloud_tea_openapi import models as open_api_models
     from alibabacloud_ocr_api20210707 import models as ocr_models
+    from alibabacloud_tea_util import models as util_models
     ALIYUN_SDK_AVAILABLE = True
 except ImportError:
     ALIYUN_SDK_AVAILABLE = False
@@ -41,7 +42,7 @@ def analyze_reports_ultimate(file_paths):
 
 
 # ==============================================================================
-# --- APP 1: OCR 工具 (明细版 V2 - 三步审核流程) ---
+# --- APP 1: OCR 工具 (表格识别版) ---
 # ==============================================================================
 def run_ocr_app_detailed():
     """Contains all logic and UI for the Detailed OCR Sales Notification Generator."""
@@ -49,33 +50,24 @@ def run_ocr_app_detailed():
     # --- 配置信息 ---
     TEAM_TYPE_MAP = { "CON": "会议团", "FIT": "散客团", "WA": "婚宴团" }
     DEFAULT_TEAM_TYPE = "旅游团"
-    # [关键修正] 扩充房型代码列表
-    ALL_ROOM_CODES = [
-        "DETN", "DKN", "DQN", "DQS", "DSKN", "DSTN", "DTN", "EKN", "EKS", "ESN", "ESS",
-        "ETN", "ETS", "FSN", "FSB", "FSC", "OTN", "PSA", "PSB", "RSN", "SKN",
-        "SQN", "SQS", "SSN", "SSS", "STN", "STS", "JDEN", "JDKN", "JDKS", "JEKN",
-        "JESN", "JESS", "JETN", "JETS", "JKN", "JLKN", "JTN", "JTS", "PSC", "PSD",
-        "VCKN", "VCKD", "SITN", "JEN", "JIS", "JTIN", "SON", "DON" # 添加了 SON 和 DON
-    ]
     SALES_LIST = ["陈洪贞", "倪斌", "刘亚炜", "黄婷", "蒋思源", "黄泽浩", "蒋光聪", "吴皓宇", "潘茜", "柏方"]
 
-
-    # --- OCR 引擎函数 (阿里云版) ---
-    def get_ocr_text_from_aliyun(image: Image.Image) -> str:
+    # --- [终极升级] OCR 引擎函数 (使用 RecognizeTable API) ---
+    def get_ocr_table_data(image: Image.Image) -> (dict, str):
         if not ALIYUN_SDK_AVAILABLE:
             st.error("错误：阿里云 SDK 未安装。请确保 requirements.txt 文件配置正确。")
-            return None
+            return None, None
         
         if "aliyun_credentials" not in st.secrets:
             st.error("错误：阿里云凭证未在 Streamlit Cloud 的 Secrets 中配置。")
-            return None
+            return None, None
         
         access_key_id = st.secrets.aliyun_credentials.get("access_key_id")
         access_key_secret = st.secrets.aliyun_credentials.get("access_key_secret")
 
         if not access_key_id or not access_key_secret:
             st.error("错误：阿里云 AccessKey ID 或 Secret 未在 Secrets 中正确配置。")
-            return None
+            return None, None
             
         try:
             config = open_api_models.Config(
@@ -89,73 +81,96 @@ def run_ocr_app_detailed():
             if image.mode == 'RGBA':
                 image = image.convert('RGB')
             
-            image_format = "JPEG"
+            image_format = "PNG" # PNG is recommended for table recognition
             image.save(buffered, format=image_format)
             buffered.seek(0)
             
-            request = ocr_models.RecognizeGeneralRequest(body=buffered)
-            response = client.recognize_general(request)
+            request = ocr_models.RecognizeTableRequest(body=buffered)
+            runtime = util_models.RuntimeOptions()
+            response = client.recognize_table_with_options(request, runtime)
 
             if response.status_code == 200 and response.body and response.body.data:
                 data = json.loads(response.body.data)
-                return data.get('content', '')
+                raw_text = "\n".join([row['text'] for row in data.get('tables', [{}])[0].get('table_rows', [])])
+                return data, raw_text
             else:
                 error_message = '无详细信息'
                 if response.body and hasattr(response.body, 'message'):
                    error_message = response.body.message
-                raise Exception(f"阿里云 OCR API 返回错误: {error_message}")
+                raise Exception(f"阿里云表格识别 API 返回错误: {error_message}")
 
         except Exception as e:
             st.error(f"调用阿里云 OCR API 失败: {e}")
-            return None
+            return None, None
 
-    # --- [关键升级] 信息提取与格式化 (支持多日期和价格) ---
-    def extract_booking_info(ocr_text: str):
+    # --- [终极升级] 信息提取 (从结构化表格数据) ---
+    def extract_booking_info_from_table(ocr_data: dict, ocr_text: str):
         team_name_pattern = re.compile(r'((?:CON|FIT|WA)\d+\s*/\s*[\u4e00-\u9fa5\w]+)', re.IGNORECASE)
         team_name_match = team_name_pattern.search(ocr_text)
-        if not team_name_match: return "错误：无法识别出团队名称。"
+        if not team_name_match: return "错误：无法从文本中识别出团队名称。"
         team_name = re.sub(r'\s*/\s*', '/', team_name_match.group(1).strip())
         team_prefix = team_name[:3].upper()
         team_type = TEAM_TYPE_MAP.get(team_prefix, DEFAULT_TEAM_TYPE)
 
-        lines = ocr_text.split('\n')
-        date_groups = {} 
+        if not ocr_data or 'tables' not in ocr_data or not ocr_data['tables']:
+            return "错误：未能识别出任何表格结构。"
 
-        # [终极修正] 增加对状态 'R' 的强制要求
-        line_pattern = re.compile(
-            r'^\s*R\s+'                             # Line must start with R
-            r'.*?'                                  # Anything in between (like team name)
-            r'\b(' + '|'.join(ALL_ROOM_CODES) + r')\b'  # Group 1: Room Type (as a whole word)
-            r'\s+(\d+)\s+'                          # Group 2: Room Count
-            r'.*?'                                  # Non-greedy anything
-            r'(\d{1,2}/\d{2})'                      # Group 3: Arrival Date
-            r'.*?'                                  # Non-greedy anything
-            r'(\d{1,2}/\d{2})'                      # Group 4: Departure Date
-            r'.*?'                                  # Non-greedy anything
-            r'(\d+\.\d{2})'                         # Group 5: Price
-        , re.IGNORECASE)
+        table = ocr_data['tables'][0]
+        header_row = table['table_rows'][0]['table_columns']
+        header_texts = [col['text'].strip() for col in header_row]
 
-        for line in lines:
-            match = line_pattern.search(line)
-            if match:
-                room_type, room_count, arrival, departure, price = match.groups()
+        # 灵活查找列索引
+        def find_col_index(headers, potential_names):
+            for name in potential_names:
+                if name in headers:
+                    return headers.index(name)
+            return -1
+
+        status_idx = find_col_index(header_texts, ["状态", "STATUS"])
+        room_type_idx = find_col_index(header_texts, ["房类", "ROOM CATEGORY"])
+        room_count_idx = find_col_index(header_texts, ["房数", "ROOMS"])
+        arrival_idx = find_col_index(header_texts, ["到达", "ARRIVAL"])
+        departure_idx = find_col_index(header_texts, ["离开", "DEPARTURE"])
+        price_idx = find_col_index(header_texts, ["定价", "RATE"])
+
+        if any(idx == -1 for idx in [status_idx, room_type_idx, room_count_idx, arrival_idx, departure_idx, price_idx]):
+            return f"错误：表格缺少必要的列标题。请确保图片清晰且包含'状态', '房类', '房数', '到达', '离开', '定价'。"
+
+        data_rows = table['table_rows'][1:]
+        date_groups = {}
+
+        for row in data_rows:
+            cols = row['table_columns']
+            if len(cols) < len(header_texts): continue
+
+            status = cols[status_idx]['text'].strip()
+            if status.upper() != 'R': continue
+
+            try:
+                room_type = cols[room_type_idx]['text'].strip()
+                room_count = int(cols[room_count_idx]['text'].strip())
+                arrival = cols[arrival_idx]['text'].strip().split(' ')[0].replace('18:00', '').strip()
+                departure = cols[departure_idx]['text'].strip().split(' ')[0].replace('12:00', '').strip()
+                price = int(float(cols[price_idx]['text'].strip()))
+                
+                # 清理日期格式
+                arrival = re.sub(r'[^0-9/]', '', arrival)
+                departure = re.sub(r'[^0-9/]', '', departure)
+
                 date_key = (arrival, departure)
                 if date_key not in date_groups:
                     date_groups[date_key] = []
-                # 添加价格信息
-                date_groups[date_key].append((room_type.upper(), int(room_count), int(float(price))))
-        
-        if not date_groups:
-            return "错误：无法从图片中识别出任何状态为 'R' 的有效房型、日期和价格组合。"
+                date_groups[date_key].append((room_type.upper(), room_count, price))
+            except (ValueError, IndexError):
+                continue # Skip rows with parsing errors
 
+        if not date_groups:
+            return "错误：未能从表格中解析出任何有效的预定记录。"
+        
         result_groups = []
         for (arr, dep), rooms in date_groups.items():
             df = pd.DataFrame(rooms, columns=['房型', '房数', '定价'])
-            result_groups.append({
-                "arrival_raw": arr,
-                "departure_raw": dep,
-                "dataframe": df
-            })
+            result_groups.append({ "arrival_raw": arr, "departure_raw": dep, "dataframe": df })
 
         return {
             "team_name": team_name,
@@ -163,82 +178,62 @@ def run_ocr_app_detailed():
             "booking_groups": sorted(result_groups, key=lambda x: x['arrival_raw'])
         }
 
-    # --- [关键升级] 话术生成 (支持多日期和价格) ---
+    # --- 话术生成函数 (不变) ---
     def format_notification_speech(team_name, team_type, booking_groups, salesperson):
         def format_date_range(arr_str, dep_str):
             try:
                 arr_month, arr_day = arr_str.split('/')
                 dep_month, dep_day = dep_str.split('/')
-                # 如果月份相同，格式为 10.22-24
                 if arr_month == dep_month:
                     return f"{int(arr_month)}.{int(arr_day)}-{int(dep_day)}"
-                # 如果月份不同
                 return f"{int(arr_month)}.{int(arr_day)}-{int(dep_month)}.{int(dep_day)}"
-            except:
-                return f"{arr_str}-{dep_str}"
+            except: return f"{arr_str}-{dep_str}"
 
         speech_parts = []
         for group in booking_groups:
             date_range_string = format_date_range(group['arrival_raw'], group['departure_raw'])
-            
-            # [关键修正] 排序后再生成话术
             sorted_df = group['dataframe'].sort_values(by='房数', ascending=True)
-            
-            rooms_list = []
-            for _, row in sorted_df.iterrows():
-                rooms_list.append(f"{row['房数']}{row['房型']}({row['定价']})")
-                
-            room_string = "".join(rooms_list) # 用空字符串连接，更紧凑
+            rooms_list = [f"{row['房数']}{row['房型']}({row['定价']})" for _, row in sorted_df.iterrows()]
+            room_string = "".join(rooms_list)
             speech_parts.append(f"{date_range_string} {room_string}")
-            
+        
         full_room_details = " ".join(speech_parts)
         return f"新增{team_type} {team_name} {full_room_details} {salesperson}销售通知"
 
     # --- Streamlit 主应用 ---
-    st.title("炼狱金陵/金陵至尊必修剑谱 - OCR 工具 (明细版)")
+    st.title("炼狱金陵/金陵至尊必修剑谱 - OCR 工具 (表格识别版)")
     
-    # [关键修正] 引入多步骤流程控制
-    if 'ocr_step' not in st.session_state:
-        st.session_state.ocr_step = 0 # 0: initial, 1: text review, 2: table review
+    st.info("此版本使用专业的表格识别引擎，准确度更高。")
 
-    uploaded_file = st.file_uploader("上传图片文件", type=["png", "jpg", "jpeg", "bmp"], key="ocr_uploader_detailed")
+    uploaded_file = st.file_uploader("上传带表格线的清晰图片", type=["png", "jpg", "jpeg", "bmp"], key="ocr_uploader_table")
 
     if uploaded_file is not None:
-        if st.button("1. 从图片提取文本"):
-            st.session_state.ocr_step = 1
-            with st.spinner('正在调用阿里云 OCR API 识别中...'):
-                ocr_text = get_ocr_text_from_aliyun(Image.open(uploaded_file))
-                if ocr_text:
-                    st.session_state.raw_ocr_text = ocr_text
-                    st.success("文本提取成功！请在下方审核并修正。")
-                else:
-                    st.session_state.ocr_step = 0
-    
-    # 步骤1：审核原始文本
-    if st.session_state.ocr_step >= 1:
-        st.markdown("---")
-        st.subheader("第 1 步：审核原始文本")
-        edited_text = st.text_area("您可以直接在此处修改 OCR 识别结果：", value=st.session_state.get('raw_ocr_text', ''), height=250)
-        st.session_state.edited_ocr_text = edited_text
+        image = Image.open(uploaded_file)
+        st.image(image, caption="上传的图片", width=400)
 
-        if st.button("2. 解析文本生成表格"):
-            result = extract_booking_info(st.session_state.edited_ocr_text)
-            if isinstance(result, str):
-                st.warning(result)
-            else:
-                st.session_state.booking_info = result
-                st.session_state.ocr_step = 2
-                st.success("文本解析成功！请在下方审核表格。")
+        if st.button("从图片提取表格信息"):
+            if 'booking_info_table' in st.session_state:
+                del st.session_state['booking_info_table']
+            
+            with st.spinner('正在调用阿里云表格识别 API...'):
+                ocr_data, ocr_text = get_ocr_table_data(image)
+                if ocr_data and ocr_text:
+                    result = extract_booking_info_from_table(ocr_data, ocr_text)
+                    if isinstance(result, str):
+                        st.warning(result)
+                    else:
+                        st.session_state.booking_info_table = result
+                        st.success("表格信息提取成功！请在下方核对。")
 
-    # 步骤2：审核表格
-    if st.session_state.ocr_step >= 2:
+    if 'booking_info_table' in st.session_state:
+        info = st.session_state.booking_info_table
+        
         st.markdown("---")
-        st.subheader("第 2 步：审核结构化表格")
-        info = st.session_state.booking_info
+        st.subheader("核对与编辑信息")
+
+        info['team_name'] = st.text_input("团队名称", value=info['team_name'])
         
-        info['team_name'] = st.text_input("团队名称", value=info.get('team_name', ''))
-        
-        for i, group in enumerate(info.get('booking_groups', [])):
+        for i, group in enumerate(info['booking_groups']):
             st.markdown("---")
             col1, col2 = st.columns(2)
             with col1:
@@ -252,7 +247,6 @@ def run_ocr_app_detailed():
             info['booking_groups'][i]['dataframe'] = edited_df
         
         st.markdown("---")
-        st.subheader("第 3 步：生成最终话术")
         selected_salesperson = st.selectbox("选择对应销售", options=SALES_LIST)
 
         if st.button("生成最终话术"):
@@ -568,6 +562,16 @@ def run_analyzer_app():
 # ==============================================================================
 # --- [最终版] APP 4: 酒店入住数据分析应用 ---
 # ==============================================================================
+# [关键修正] 增加 Excel 下载辅助函数
+@st.cache_data
+def to_excel(df_dict):
+    output = io.BytesIO()
+    with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
+        for sheet_name, df in df_dict.items():
+            df.to_excel(writer, sheet_name=sheet_name)
+    processed_data = output.getvalue()
+    return processed_data
+
 @st.cache_data
 def process_data(uploaded_file):
     """
@@ -662,38 +666,79 @@ def run_data_analysis_app():
             
         st.success(f"文件 '{uploaded_file.name}' 上传并处理成功！")
 
-        st.header("1. 每日到店房数统计")
-        with st.expander("点击展开或折叠"):
-            default_arrival_date = ""
-            if not original_df.empty and '到达' in original_df.columns:
-                default_arrival_date = pd.to_datetime(original_df['到达'].min()).strftime('%Y/%m/%d')
-
+        st.header("1. 每日到店/离店房数统计")
+        with st.expander("点击展开或折叠", expanded=True):
+            
+            # --- 到店统计 ---
+            st.subheader("到店房数统计 (状态: R)")
             arrival_dates_str = st.text_input(
-                "输入到店日期 (用逗号分隔, 格式: YYYY/MM/DD)", default_arrival_date
+                "输入到店日期 (用逗号分隔, 格式: YYYY/MM/DD)", 
+                pd.to_datetime(original_df['到达'].min()).strftime('%Y/%m/%d') if not original_df.empty else ""
             )
             
-            selected_arrival_dates = []
+            arrival_summary = pd.DataFrame() # 初始化为空
             if arrival_dates_str:
                 try:
                     date_strings = [d.strip() for d in arrival_dates_str.split(',') if d.strip()]
                     selected_arrival_dates = [pd.to_datetime(d, format='%Y/%m/%d').date() for d in date_strings]
+                    
+                    arrival_df = original_df[
+                        (original_df['状态'] == 'R') & 
+                        (original_df['到达'].dt.date.isin(selected_arrival_dates))
+                    ].copy()
+
+                    if not arrival_df.empty:
+                        arrival_summary = arrival_df.groupby([arrival_df['到达'].dt.date, '楼层'])['房数'].sum().unstack(fill_value=0)
+                        arrival_summary.index.name = "到店日期"
+                        st.dataframe(arrival_summary)
+                    else:
+                        st.warning(f"在所选日期内没有找到状态为 'R' 的到店记录。")
                 except ValueError:
-                    st.error("到店日期格式不正确，请输入 YYYY/MM/DD 格式，并用逗号分隔。")
-                    st.stop()
+                    st.error("到店日期格式不正确，请输入 YYYY/MM/DD 格式。")
 
-            if selected_arrival_dates:
-                arrival_df = original_df[
-                    (original_df['状态'] == 'R') & 
-                    (original_df['到达'].dt.date.isin(selected_arrival_dates))
-                ].copy()
+            # --- 离店统计 ---
+            st.subheader("离店房数统计 (状态: R, S, I, O)")
+            departure_dates_str = st.text_input(
+                "输入离店日期 (用逗号分隔, 格式: YYYY/MM/DD)",
+                pd.to_datetime(original_df['离开'].min()).strftime('%Y/%m/%d') if not original_df.empty else ""
+            )
+            
+            departure_summary = pd.DataFrame() # 初始化为空
+            if departure_dates_str:
+                try:
+                    date_strings = [d.strip() for d in departure_dates_str.split(',') if d.strip()]
+                    selected_departure_dates = [pd.to_datetime(d, format='%Y/%m/%d').date() for d in date_strings]
+                    
+                    departure_df = original_df[
+                        (original_df['状态'].isin(['R', 'S', 'I', 'O'])) & 
+                        (original_df['离开'].dt.date.isin(selected_departure_dates))
+                    ].copy()
 
-                if not arrival_df.empty:
-                    arrival_summary = arrival_df.groupby([arrival_df['到达'].dt.date, '楼层'])['房数'].sum().unstack(fill_value=0)
-                    arrival_summary.index.name = "到店日期"
-                    st.dataframe(arrival_summary)
-                else:
-                    st.warning(f"在所选日期内没有找到状态为 'R' 的到店记录。")
-        
+                    if not departure_df.empty:
+                        departure_summary = departure_df.groupby([departure_df['离开'].dt.date, '楼层'])['房数'].sum().unstack(fill_value=0)
+                        departure_summary.index.name = "离店日期"
+                        st.dataframe(departure_summary)
+                    else:
+                        st.warning(f"在所选日期内没有找到状态为 'R', 'S', 'I', 'O' 的离店记录。")
+                except ValueError:
+                    st.error("离店日期格式不正确，请输入 YYYY/MM/DD 格式。")
+
+            # --- 下载按钮 ---
+            if not arrival_summary.empty or not departure_summary.empty:
+                df_to_download = {}
+                if not arrival_summary.empty:
+                    df_to_download["到店统计"] = arrival_summary
+                if not departure_summary.empty:
+                    df_to_download["离店统计"] = departure_summary
+                
+                excel_data = to_excel(df_to_download)
+                st.download_button(
+                    label="下载到店/离店统计为 Excel",
+                    data=excel_data,
+                    file_name="arrival_departure_summary.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                )
+
         st.markdown("---")
 
         st.header("2. 每日在住房间按价格分布矩阵")
@@ -710,25 +755,22 @@ def run_data_analysis_app():
                     stay_date_strings = [d.strip() for d in stay_dates_str.split(',') if d.strip()]
                     selected_stay_dates = [pd.to_datetime(d, format='%Y/%m/%d').date() for d in stay_date_strings]
                 except ValueError:
-                    st.error("住店日期格式不正确，请输入 YYYY/MM/DD 格式，并用逗号分隔。")
+                    st.error("住店日期格式不正确，请输入 YYYY/MM/DD 格式。")
                     st.stop()
             
             all_market_codes = sorted(original_df['市场码'].dropna().unique())
             selected_market_codes = st.multiselect("选择市场码 (可多选)", options=all_market_codes, default=all_market_codes)
             
-            # [关键修正] 为两栋楼分别创建价格区间输入框
             st.subheader("自定义价格区间")
             col1, col2 = st.columns(2)
             with col1:
-                # [关键修正] 更新默认价格区间
                 price_bins_jinling_str = st.text_input("金陵楼价格区间", "<401, 401-480, 481-500, 501-550, 551-599, >599")
             with col2:
-                # [关键修正] 更新默认价格区间
                 price_bins_yatal_str = st.text_input("亚太楼价格区间", "<501, 501-600, 601-699, 700-749, 750-799, >799")
 
             def parse_price_bins(price_bins_str):
-                if not price_bins_str.strip():
-                    return None, None
+                # ... (此函数保持不变)
+                if not price_bins_str.strip(): return None, None
                 intervals = []
                 for item in price_bins_str.split(','):
                     item = item.strip()
@@ -741,11 +783,9 @@ def run_data_analysis_app():
                     elif '-' in item:
                         parts = item.split('-')
                         lower, upper = int(parts[0]), int(parts[1])
-                        if lower >= upper:
-                            raise ValueError(f"价格区间 '{item}' 无效：下限必须小于上限。")
+                        if lower >= upper: raise ValueError(f"价格区间 '{item}' 无效：下限必须小于上限。")
                         intervals.append({'lower': lower, 'upper': upper, 'label': f'{lower}-{upper}'})
-                    else:
-                        raise ValueError(f"无法解析区间 '{item}'")
+                    else: raise ValueError(f"无法解析区间 '{item}'")
                 intervals.sort(key=lambda x: x['lower'])
                 bins = [d['lower'] for d in intervals] + [intervals[-1]['upper']]
                 labels = [d['label'] for d in intervals]
@@ -757,7 +797,8 @@ def run_data_analysis_app():
             except (ValueError, IndexError, AttributeError) as e:
                 st.error(f"价格区间格式不正确。错误: {e}")
                 st.stop()
-
+            
+            dfs_to_download_matrix = {}
             if selected_stay_dates and selected_market_codes:
                 matrix_df = expanded_df[
                     (expanded_df['住店日'].dt.date.isin(selected_stay_dates)) &
@@ -786,12 +827,23 @@ def run_data_analysis_app():
                             if not pivot_table.empty:
                                 pivot_table['每日总计'] = pivot_table.sum(axis=1)
                                 st.dataframe(pivot_table.sort_index())
+                                dfs_to_download_matrix[f"{building}_在住分布"] = pivot_table
                             else:
                                  st.info(f"在 {building} 中，所选条件下的所有房价都不在您定义的价格区间内。")
                         else:
                             st.info(f"在 {building} 中，没有找到符合所选条件的在住记录或未设置价格区间。")
                 else:
                     st.warning(f"在所选日期和市场码范围内没有找到在住记录。")
+            
+            if dfs_to_download_matrix:
+                excel_data_matrix = to_excel(dfs_to_download_matrix)
+                st.download_button(
+                    label="下载价格分布矩阵为 Excel",
+                    data=excel_data_matrix,
+                    file_name="price_matrix_summary.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                )
+
 
     except Exception as e:
         st.error(f"处理数据或生成报告时发生意外错误。请检查您的Excel文件格式是否正确。")
@@ -843,9 +895,9 @@ if check_password():
         app_choice = option_menu(
             menu_title="炼狱金陵/金陵至尊必修剑谱",
             options=["OCR 工具", "比对平台", "报告分析器", "数据分析"],
-            icons=["camera-reels", "columns-gap", "file-earmark-bar-graph", "bar-chart-line"],
+            icons=["camera-reels-fill", "kanban", "clipboard-data", "graph-up-arrow"],
             menu_icon="tools",
-            default_index=0,
+            default_index=3,
         )
 
     st.sidebar.markdown("---")
