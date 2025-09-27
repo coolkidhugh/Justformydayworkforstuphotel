@@ -164,6 +164,7 @@ def run_ocr_app_detailed():
 
     uploaded_file = st.file_uploader("上传图片文件", type=["png", "jpg", "jpeg", "bmp"], key="ocr_uploader_detailed")
 
+    # --- 步骤 0: 上传和处理 ---
     if uploaded_file and st.session_state.ocr_step == 0:
         st.session_state.uploaded_image_bytes = uploaded_file.getvalue()
         if st.button("1. 从图片提取信息"):
@@ -185,12 +186,12 @@ def run_ocr_app_detailed():
                         st.session_state.booking_info = result
                         st.session_state.ocr_step = 1
                         st.success("信息解析成功！请在下方审核并修正数据。")
-                        st.rerun()
+                        # [关键修正] 移除 st.rerun()，让脚本自然向下执行以显示结果
                 else:
                     st.session_state.ocr_step = 0
     
+    # --- 步骤 1: 审核和生成 ---
     if st.session_state.ocr_step >= 1:
-        # [关键修正] 增加对 bytes 对象的有效性检查，防止 TypeError
         if 'uploaded_image_bytes' in st.session_state and st.session_state.uploaded_image_bytes:
             st.subheader("您上传的图片")
             st.image(st.session_state.uploaded_image_bytes, use_container_width=True)
@@ -906,29 +907,5 @@ if check_password():
         run_morning_briefing_app()
     elif app_choice == "常用话术":
         run_common_phrases_app()
-" code between  and  in the most up-to-date Canvas "金陵工具箱" document above and am asking a query about/based on this code below.
-Instructions to follow:
-  * Don't output/edit the document if the query is Direct/Simple. For example, if the query asks for a simple explanation, output a direct answer.
-  * Make sure to **edit** the document if the query shows the intent of editing the document, in which case output the entire edited document, **not just that section or the edits**.
-    * Don't output the same document/empty document and say that you have edited it.
-    * Don't change unrelated code in the document.
-  * Don't output  and  in your final response.
-  * Any references like "this" or "selected code" refers to the code between  and  tags.
-  * Just acknowledge my request in the introduction.
-  * Make sure to refer to the document as "Canvas" in your response.
-
-TypeError: This app has encountered an error. The original error message is redacted to prevent data leaks. Full error details have been recorded in the logs (if you're on Streamlit Cloud, click on 'Manage app' in the lower right of your app).
-
-Traceback:
-File "/home/adminuser/venv/lib/python3.13/site-packages/streamlit/runtime/scriptrunner/script_runner.py", line 584, in _run_script
-    exec(code, module.__dict__)
-    ~~~~^^^^^^^^^^^^^^^^^^^^^^^
-File "/mount/src/justformydayworkforstuphotel/app.py", line 898, in <module>
-    run_ocr_app_detailed()
-    ~~~~~~~~~~~~~~~~~~~~^^
-File "/mount/src/justformydayworkforstuphotel/app.py", line 197, in run_ocr_app_detailed
-    st.image(st.session_state.uploaded_image_bytes, use_container_width=True)
-    ~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-File "/home/adminuser/venv/lib/python3.13/site-packages/streamlit/runtime/metrics_util.py", line 397, in wrapped_func
-    result = non_optional_func(*args, **kwargs)
+"
 
