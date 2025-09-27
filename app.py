@@ -855,6 +855,76 @@ def run_data_analysis_app():
 
 
 # ==============================================================================
+# --- [新增] APP 5: 早班话术生成器 ---
+# ==============================================================================
+def run_morning_briefing_app():
+    st.title("炼狱金陵/金陵至尊必修剑谱 - 早班话术生成器")
+
+    st.subheader("数据输入")
+    
+    col1, col2 = st.columns(2)
+    with col1:
+        st.markdown("#### 金陵楼数据")
+        jl_occupancy = st.number_input("昨日出租率 (%)", key="jl_occ", format="%.1f", value=82.4)
+        jl_revenue = st.number_input("收入 (元)", key="jl_rev", format="%.1f", value=247173.4)
+        jl_adr = st.number_input("平均房价 (元)", key="jl_adr", format="%.1f", value=550.5)
+        jl_guests = st.number_input("总人数", key="jl_guests", value=673)
+        jl_jinhaiwan = st.number_input("金海湾人数", key="jl_jinhaiwan", value=572)
+
+    with col2:
+        st.markdown("#### 亚太楼数据")
+        yt_occupancy = st.number_input("昨日出租率 (%)", key="yt_occ", format="%.1f", value=83.9)
+        yt_revenue = st.number_input("收入 (元)", key="yt_rev", format="%.1f", value=232385.5)
+        yt_adr = st.number_input("平均房价 (元)", key="yt_adr", format="%.1f", value=719.5)
+        yt_guests = st.number_input("总人数", key="yt_guests", value=485)
+        yt_jia = st.number_input("家餐厅人数", key="yt_jia", value=323)
+        
+    st.markdown("---")
+    st.subheader("其他数据")
+    col3, col4 = st.columns(2)
+    with col3:
+        onbook_jl = st.number_input("目前On Book出租率 - 金陵楼 (%)", key="ob_jl", format="%.1f", value=65.5)
+        onbook_yt = st.number_input("目前On Book出租率 - 亚太楼 (%)", key="ob_yt", format="%.1f", value=57.7)
+    with col4:
+        mini_prog_yesterday = st.number_input("小程序订房 - 昨日 (间夜)", key="mp_yest", value=26)
+        mini_prog_today = st.number_input("小程序订房 - 今日 (间夜)", key="mp_today", value=19)
+
+    if st.button("生成话术"):
+        briefing = (
+            f"昨日金陵楼出租率{jl_occupancy}%，收入{jl_revenue}元，平均房价{jl_adr}元，总人数{jl_guests}人，金海湾{jl_jinhaiwan}人。"
+            f"亚太商务楼出率{yt_occupancy}%，收入{yt_revenue}元，平均房价{yt_adr}元，总人数{yt_guests}人，家餐厅{yt_jia}人。"
+            f"目前on book出租率金陵楼{onbook_jl}%，亚太商务楼{onbook_yt}%。"
+            f"小程序订房昨日{mini_prog_yesterday}间夜，今日{mini_prog_today}间夜。"
+        )
+        st.subheader("生成的话术")
+        st.success(briefing)
+        st.code(briefing)
+
+# ==============================================================================
+# --- [新增] APP 6: 常用话术复制器 ---
+# ==============================================================================
+def run_common_phrases_app():
+    st.title("炼狱金陵/金陵至尊必修剑谱 - 常用话术")
+    
+    phrases = [
+        "CA RM TO CREDIT FM",
+        "免预付,房费及3000元以内杂费转淘宝 FM",
+        "房费转携程宏睿 FM",
+        "房价保密,房费转华为 FM",
+        "房费转淘宝 FM",
+        "CA RM TO 兰艳(109789242)金陵卡 FM",
+        "CA RM TO AGODA FM",
+        "CA RM TO CREDIT CARD FM XX-XX/XX(卡号/有效期XX/XX)",
+        "房费转微信 FM",
+        "房费预付杂费自理FM"
+    ]
+    
+    st.subheader("点击右上角复制图标即可复制话术")
+    for phrase in phrases:
+        st.code(phrase, language=None)
+
+
+# ==============================================================================
 # --- 全局函数和主应用路由器 ---
 # ==============================================================================
 # [关键修正] 恢复 to_excel 辅助函数
