@@ -7,7 +7,7 @@ import json
 import unicodedata
 import os
 import traceback
-from datetime import timedelta
+from datetime import timedelta, date
 # [关键更新] 导入新的侧边栏组件
 from streamlit_option_menu import option_menu
 
@@ -87,7 +87,8 @@ def run_ocr_app_detailed():
             
             # 使用 RecognizeAdvanced 接口
             request = ocr_models.RecognizeAdvancedRequest(body=buffered)
-            response = client.recognize_advanced(request, util_models.RuntimeOptions())
+            # [关键修正] 修正了 recognize_advanced 函数的调用参数，移除了多余的 RuntimeOptions
+            response = client.recognize_advanced(request)
 
             if response.status_code == 200 and response.body and response.body.data:
                 data = json.loads(response.body.data)
@@ -946,47 +947,96 @@ def run_common_phrases_app():
 
 
 # ==============================================================================
-# --- [新增] APP 7: OCR 预算计算器 ---
+# --- [重构] APP 7: 预算计算器 (表格版) ---
 # ==============================================================================
 def run_budget_calculator_app():
     st.title("炼狱金陵/金陵至尊必修剑谱 - 预算计算器")
-    
-    # [关键修正] 去除 OCR 功能，改为纯手动输入
-    st.info("请根据您的预算报表，在下方表格中手动输入对应的百分比数值。")
+    st.info("请在下方表格中输入每日的预计和实际数据，然后点击计算按钮。")
 
     # --- 数据输入表格 ---
     st.subheader("数据输入")
-    # 创建一个空的 DataFrame，让用户编辑
+    
+    # 初始化一个7天的DataFrame用于输入
+    today = date.today()
+    days = [(today + timedelta(days=i)) for i in range(7)]
+    weekdays_zh = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"]
+    
     initial_data = {
-        "指标": ["当日实际", "当日预计", "周一预计"],
-        "数值 (%)": [82.0, 80.0, 75.0] # 示例值
+        "日期": [d.strftime("%m/%d") for d in days],
+        "星期": [weekdays_zh[d.weekday()] for d in days],
+        "当日预计": [0.0] * 7,
+        "当日实际": [0.0] * 7,
+        "周一预计": [0.0] * 7,
+        "平均房价": [0.0] * 7
     }
     input_df = pd.DataFrame(initial_data)
     
+    st.info("说明：'周一预计'列通常只需要在第一行（周一）填写，计算时会自动应用到后续日期。")
     # 使用 st.data_editor 让用户可以直接修改表格
-    edited_df = st.data_editor(input_df, key="budget_editor", num_rows="fixed")
+    edited_df = st.data_editor(
+        input_df, 
+        key="budget_editor", 
+        num_rows="fixed",
+        use_container_width=True,
+        column_config={
+            "当日预计": st.column_config.NumberColumn(format="%.2f"),
+            "当日实际": st.column_config.NumberColumn(format="%.2f"),
+            "周一预计": st.column_config.NumberColumn(format="%.2f"),
+            "平均房价": st.column_config.NumberColumn(format="%.2f"),
+        }
+    )
 
     st.subheader("计算结果")
-    if st.button("计算增长率"):
+    if st.button("计算并生成报告"):
         try:
-            # 从编辑后的表格中提取数值
-            actual = float(edited_df.loc[edited_df['指标'] == '当日实际', '数值 (%)'].iloc[0])
-            forecast = float(edited_df.loc[edited_df['指标'] == '当日预计', '数值 (%)'].iloc[0])
-            monday_forecast = float(edited_df.loc[edited_df['指标'] == '周一预计', '数值 (%)'].iloc[0])
-
-            # 计算
-            daily_increase = actual - forecast
-            weekly_increase = actual - monday_forecast
+            # 数据清洗和转换
+            result_df = edited_df.copy()
+            numeric_cols = ["当日预计", "当日实际", "周一预计", "平均房价"]
+            for col in numeric_cols:
+                result_df[col] = pd.to_numeric(result_df[col], errors='coerce').fillna(0)
             
-            # 使用表格展示结果
-            results_df = pd.DataFrame({
-                "指标": ["当日实际", "当日增加率", "周增加率"],
-                "数值": [f"{actual:.2f}%", f"{daily_increase:.2f}%", f"{weekly_increase:.2f}%"]
-            })
-            st.dataframe(results_df)
+            # 如果周一预计只填了第一行，则填充到所有行
+            monday_forecast_val = result_df['周一预计'].iloc[0]
+            if monday_forecast_val != 0:
+                result_df['周一预计'] = monday_forecast_val
 
-        except (ValueError, IndexError):
-            st.error("输入的数据格式不正确，请确保'数值 (%)'列只包含数字。")
+            # 执行计算
+            result_df["当日增加率"] = result_df["当日实际"] - result_df["当日预计"]
+            # 创建一个临时的当日实际列用于周增加率计算
+            result_df["当日实际_周比"] = result_df["当日实际"]
+            result_df["周增加率"] = result_df["当日实际_周比"] - result_df["周一预计"]
+            
+            # 调整列顺序以匹配图片
+            display_columns = [
+                "日期", "星期", "当日预计", "当日实际", "当日增加率", 
+                "周一预计", "当日实际_周比", "周增加率", "平均房价"
+            ]
+            result_df = result_df[display_columns]
+            
+            # 重命名列以在UI上显示正确
+            result_df.rename(columns={"当日实际_周比": "当日实际", "周增加率": "增加百分率"}, inplace=True)
+
+            st.dataframe(result_df.style.format({
+                "当日预计": "{:.2f}", "当日实际": "{:.2f}", "当日增加率": "{:+.2f}",
+                "周一预计": "{:.2f}", "增加百分率": "{:+.2f}", "平均房价": "{:.2f}"
+            }))
+            
+            # --- 计算并显示总计 ---
+            st.markdown("---")
+            st.subheader("本周总计")
+            
+            total_actual = result_df['当日实际'].sum()
+            total_forecast = result_df['当日预计'].sum()
+            total_increase = total_actual - total_forecast
+            
+            col1, col2, col3 = st.columns(3)
+            col1.metric("本周实际", f"{total_actual:.2f}")
+            col2.metric("本周预测", f"{total_forecast:.2f}")
+            col3.metric("实际增加", f"{total_increase:+.2f}")
+
+
+        except (ValueError, IndexError, KeyError) as e:
+            st.error(f"计算时发生错误，请检查输入的数据格式是否正确。错误详情: {e}")
 
 # ==============================================================================
 # --- 全局函数和主应用路由器 ---
@@ -1044,7 +1094,7 @@ if check_password():
             options=["OCR 工具", "预算计算器", "比对平台", "报告分析器", "数据分析", "话术生成器", "常用话术"],
             icons=["camera-reels-fill", "calculator", "kanban", "clipboard-data", "graph-up-arrow", "blockquote-left", "card-text"],
             menu_icon="tools",
-            default_index=0,
+            default_index=1, # 默认选择预算计算器
         )
 
     st.sidebar.markdown("---")
@@ -1064,3 +1114,5 @@ if check_password():
         run_morning_briefing_app()
     elif app_choice == "常用话术":
         run_common_phrases_app()
+
+
