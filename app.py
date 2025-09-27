@@ -42,7 +42,7 @@ def analyze_reports_ultimate(file_paths):
 
 
 # ==============================================================================
-# --- APP 1: OCR 工具 (表格增强版 V3) ---
+# --- APP 1: OCR 工具 (双模式 V4) ---
 # ==============================================================================
 def run_ocr_app_detailed():
     """Contains all logic and UI for the Detailed OCR Sales Notification Generator."""
@@ -51,9 +51,17 @@ def run_ocr_app_detailed():
     TEAM_TYPE_MAP = { "CON": "会议团", "FIT": "散客团", "WA": "婚宴团" }
     DEFAULT_TEAM_TYPE = "旅游团"
     SALES_LIST = ["陈洪贞", "倪斌", "刘亚炜", "黄婷", "蒋思源", "黄泽浩", "蒋光聪", "吴皓宇", "潘茜", "柏方"]
+    # [关键修正] 恢复房型代码列表，供后备文本模式使用
+    ALL_ROOM_CODES = [
+        "DETN", "DKN", "DQN", "DQS", "DSKN", "DSTN", "DTN", "EKN", "EKS", "ESN", "ESS",
+        "ETN", "ETS", "FSN", "FSB", "FSC", "OTN", "PSA", "PSB", "RSN", "SKN",
+        "SQN", "SQS", "SSN", "SSS", "STN", "STS", "JDEN", "JDKN", "JDKS", "JEKN",
+        "JESN", "JESS", "JETN", "JETS", "JKN", "JLKN", "JTN", "JTS", "PSC", "PSD",
+        "VCKN", "VCKD", "SITN", "JEN", "JIS", "JTIN", "SON", "DON"
+    ]
 
-    # --- [关键升级] OCR 引擎函数 (使用 RecognizeAdvanced 接口进行表格识别) ---
-    def get_ocr_table_from_aliyun(image: Image.Image):
+    # --- OCR 引擎函数 (使用 RecognizeAdvanced 接口) ---
+    def get_ocr_data_from_aliyun(image: Image.Image):
         if not ALIYUN_SDK_AVAILABLE:
             st.error("错误：阿里云 SDK 未安装。请确保 requirements.txt 文件配置正确。")
             return None
@@ -78,21 +86,16 @@ def run_ocr_app_detailed():
             client = OcrClient(config)
 
             buffered = io.BytesIO()
-            if image.mode == 'RGBA':
-                image = image.convert('RGB')
+            if image.mode == 'RGBA': image = image.convert('RGB')
             
-            image_format = "JPEG"
-            image.save(buffered, format=image_format)
+            image.save(buffered, format="JPEG")
             buffered.seek(0)
             
-            # 使用 RecognizeAdvanced 接口
             request = ocr_models.RecognizeAdvancedRequest(body=buffered)
-            # [关键修正] 修正了 recognize_advanced 函数的调用参数，移除了多余的 RuntimeOptions
             response = client.recognize_advanced(request)
 
             if response.status_code == 200 and response.body and response.body.data:
-                data = json.loads(response.body.data)
-                return data
+                return json.loads(response.body.data)
             else:
                 error_message = '无详细信息'
                 if response.body and hasattr(response.body, 'message'):
@@ -103,142 +106,140 @@ def run_ocr_app_detailed():
             st.error(f"调用阿里云 OCR API 失败: {e}")
             return None
 
-    # --- [关键升级] 从表格结构中提取信息 ---
+    # --- [模式一] 从表格结构中提取信息 ---
     def extract_booking_info_from_table(ocr_data: dict):
         full_text = ocr_data.get('content', '')
         tables = ocr_data.get('tables', [])
-
-        # 1. 提取团队名称
+        
         team_name_pattern = re.compile(r'((?:CON|FIT|WA)\d+\s*/\s*[\u4e00-\u9fa5\w]+)', re.IGNORECASE)
         team_name_match = team_name_pattern.search(full_text)
-        if not team_name_match:
-            return "错误：无法从图片文本中识别出团队名称 (例如 CON25625/麦尔会展)。"
+        if not team_name_match: return "错误[表格模式]：无法识别出团队名称。"
+        
         team_name = re.sub(r'\s*/\s*', '/', team_name_match.group(1).strip())
         team_prefix = team_name[:3].upper()
         team_type = TEAM_TYPE_MAP.get(team_prefix, DEFAULT_TEAM_TYPE)
 
-        if not tables:
-            return "错误：OCR未能成功识别出任何表格结构。"
-
-        # 2. 处理表格数据
         all_rows = []
-        # 假设我们只需要第一个识别出的表格
         table_data = tables[0]
         header = [cell.strip() for cell in table_data.get('header', [])]
         
-        # 查找关键列的索引
         try:
             col_indices = {
-                'status': header.index("状态"),
-                'room_type': header.index("房类"),
-                'room_count': header.index("房数"),
-                'arrival': header.index("到达"),
-                'departure': header.index("离开"),
-                'price': header.index("定价")
+                'status': header.index("状态"), 'room_type': header.index("房类"),
+                'room_count': header.index("房数"), 'arrival': header.index("到达"),
+                'departure': header.index("离开"), 'price': header.index("定价")
             }
-        except ValueError as e:
-            return f"错误：表格缺少必要的列标题。请确保表格包含 '状态', '房类', '房数', '到达', '离开', '定价'。缺失的列: {e}"
+        except ValueError as e: return f"错误[表格模式]：表格缺少必要列。请确保表头包含'状态', '房类', '房数', '到达', '离开', '定价'。缺失: {e}"
 
         for row in table_data.get('rows', []):
-            if not any(row): continue
-            
-            # 仅处理状态为 'R' 的行
-            if row[col_indices['status']].strip().upper() == 'R':
-                try:
-                    arrival_raw = re.search(r'(\d{1,2}/\d{2})', row[col_indices['arrival']]).group(1)
-                    departure_raw = re.search(r'(\d{1,2}/\d{2})', row[col_indices['departure']]).group(1)
-                    
-                    all_rows.append({
-                        "房型": row[col_indices['room_type']].strip().upper(),
-                        "房数": int(row[col_indices['room_count']]),
-                        "定价": int(float(row[col_indices['price']])),
-                        "arrival_raw": arrival_raw,
-                        "departure_raw": departure_raw
-                    })
-                except (ValueError, AttributeError, IndexError):
-                    # 如果某一行解析失败，跳过它
-                    continue
+            if not any(row) or row[col_indices['status']].strip().upper() != 'R': continue
+            try:
+                all_rows.append({
+                    "房型": row[col_indices['room_type']].strip().upper(),
+                    "房数": int(row[col_indices['room_count']]),
+                    "定价": int(float(row[col_indices['price']])),
+                    "arrival_raw": re.search(r'(\d{1,2}/\d{2})', row[col_indices['arrival']]).group(1),
+                    "departure_raw": re.search(r'(\d{1,2}/\d{2})', row[col_indices['departure']]).group(1)
+                })
+            except (ValueError, AttributeError, IndexError): continue
         
-        if not all_rows:
-            return "错误：在识别出的表格中，没有找到状态为 'R' 的有效预订记录。"
+        if not all_rows: return "错误[表格模式]：未找到状态为 'R' 的有效记录。"
 
-        # 3. 按日期范围分组
         df = pd.DataFrame(all_rows)
         grouped = df.groupby(['arrival_raw', 'departure_raw'])
+        result_groups = [{"arrival_raw": arr, "departure_raw": dep, "dataframe": gdf[['房型', '房数', '定价']].reset_index(drop=True)} for (arr, dep), gdf in grouped]
+
+        return {"team_name": team_name, "team_type": team_type, "booking_groups": sorted(result_groups, key=lambda x: x['arrival_raw'])}
+
+    # --- [模式二] 后备方案：从纯文本中提取信息 ---
+    def extract_booking_info_from_text(ocr_data: dict):
+        ocr_text = ocr_data.get('content', '')
+        if not ocr_text: return "错误[文本模式]：OCR 内容为空。"
+
+        team_name_pattern = re.compile(r'((?:CON|FIT|WA)\d+\s*/\s*[\u4e00-\u9fa5\w]+)', re.IGNORECASE)
+        team_name_match = team_name_pattern.search(ocr_text)
+        if not team_name_match: return "错误[文本模式]：无法识别出团队名称。"
         
-        result_groups = []
-        for (arr, dep), group_df in grouped:
-            result_groups.append({
-                "arrival_raw": arr,
-                "departure_raw": dep,
-                "dataframe": group_df[['房型', '房数', '定价']].reset_index(drop=True)
-            })
+        team_name = re.sub(r'\s*/\s*', '/', team_name_match.group(1).strip())
+        team_prefix = team_name[:3].upper()
+        team_type = TEAM_TYPE_MAP.get(team_prefix, DEFAULT_TEAM_TYPE)
 
-        return {
-            "team_name": team_name,
-            "team_type": team_type,
-            "booking_groups": sorted(result_groups, key=lambda x: x['arrival_raw'])
-        }
+        # 使用正则表达式从整个文本块中寻找所有匹配的条目
+        pattern = re.compile(
+            r'\b(' + '|'.join(ALL_ROOM_CODES) + r')\b'  # 1: 房型
+            r'\s+(\d+)\s+'                             # 2: 房数
+            r'.*?'                                     # 非贪婪匹配中间内容
+            r'(\d{1,2}/\d{2})'                         # 3: 到达日期
+            r'.*?'                                     # 非贪婪匹配
+            r'(\d{1,2}/\d{2})'                         # 4: 离开日期
+            r'.*?'                                     # 非贪婪匹配
+            r'(\d+\.\d{2})'                            # 5: 价格
+        , re.IGNORECASE)
+        matches = pattern.findall(ocr_text)
 
-    # --- [关键升级] 话术生成 (现在支持排序) ---
+        if not matches: return "错误[文本模式]：未能找到任何有效的'房型-日期-价格'组合。"
+
+        all_rows = [{"房型": m[0].upper(), "房数": int(m[1]), "定价": int(float(m[4])), "arrival_raw": m[2], "departure_raw": m[3]} for m in matches]
+        
+        df = pd.DataFrame(all_rows)
+        grouped = df.groupby(['arrival_raw', 'departure_raw'])
+        result_groups = [{"arrival_raw": arr, "departure_raw": dep, "dataframe": gdf[['房型', '房数', '定价']].reset_index(drop=True)} for (arr, dep), gdf in grouped]
+
+        return {"team_name": team_name, "team_type": team_type, "booking_groups": sorted(result_groups, key=lambda x: x['arrival_raw'])}
+
+    # --- 话术生成 ---
     def format_notification_speech(team_name, team_type, booking_groups, salesperson):
+        # ... (此函数无需修改)
         def format_date_range(arr_str, dep_str):
             try:
                 arr_month, arr_day = arr_str.split('/')
                 dep_month, dep_day = dep_str.split('/')
-                if arr_month == dep_month:
-                    return f"{int(arr_month)}.{int(arr_day)}-{int(dep_day)}"
+                if arr_month == dep_month: return f"{int(arr_month)}.{int(arr_day)}-{int(dep_day)}"
                 return f"{int(arr_month)}.{int(arr_day)}-{int(dep_month)}.{int(dep_day)}"
-            except:
-                return f"{arr_str}-{dep_str}"
+            except: return f"{arr_str}-{dep_str}"
 
         speech_parts = []
         for group in booking_groups:
             date_range_string = format_date_range(group['arrival_raw'], group['departure_raw'])
-            
-            # [关键修正] 排序后再生成话术
             sorted_df = group['dataframe'].sort_values(by='房数', ascending=True)
+            rooms_list = [f"{row['房数']}{row['房型']}({row['定价']})" for _, row in sorted_df.iterrows()]
+            speech_parts.append(f"{date_range_string} {''.join(rooms_list)}")
             
-            rooms_list = []
-            for _, row in sorted_df.iterrows():
-                rooms_list.append(f"{row['房数']}{row['房型']}({row['定价']})")
-                
-            room_string = "".join(rooms_list)
-            speech_parts.append(f"{date_range_string} {room_string}")
-            
-        full_room_details = " ".join(speech_parts)
-        return f"新增{team_type} {team_name} {full_room_details} {salesperson}销售通知"
+        return f"新增{team_type} {team_name} {' '.join(speech_parts)} {salesperson}销售通知"
 
     # --- Streamlit 主应用 ---
-    st.title("炼狱金陵/金陵至尊必修剑谱 - OCR 工具 (表格增强版)")
-    
-    # 引入多步骤流程控制
-    if 'ocr_step' not in st.session_state:
-        st.session_state.ocr_step = 0 # 0: initial, 1: table review
+    st.title("金陵工具箱 - OCR 工具 (双模式)")
+    if 'ocr_step' not in st.session_state: st.session_state.ocr_step = 0
 
     uploaded_file = st.file_uploader("上传图片文件", type=["png", "jpg", "jpeg", "bmp"], key="ocr_uploader_detailed")
 
-    if uploaded_file is not None and st.session_state.ocr_step == 0:
-        if st.button("1. 从图片提取表格并解析"):
-            with st.spinner('正在调用阿里云 OCR API 识别表格中...'):
-                ocr_data = get_ocr_table_from_aliyun(Image.open(uploaded_file))
+    if uploaded_file and st.session_state.ocr_step == 0:
+        if st.button("1. 从图片提取信息"):
+            with st.spinner('正在调用阿里云 OCR API...'):
+                ocr_data = get_ocr_data_from_aliyun(Image.open(uploaded_file))
+                
                 if ocr_data:
-                    st.session_state.raw_ocr_data = ocr_data # 保存原始数据以供调试
-                    result = extract_booking_info_from_table(ocr_data)
-                    
+                    st.session_state.raw_ocr_data = ocr_data
+                    result = None
+                    # [关键升级] 双模式识别逻辑
+                    if ocr_data.get('tables'):
+                        st.info("检测到表格结构，使用[表格模式]进行解析。")
+                        result = extract_booking_info_from_table(ocr_data)
+                    else:
+                        st.warning("未检测到清晰的表格结构，自动切换到[后备文本模式]进行解析。")
+                        result = extract_booking_info_from_text(ocr_data)
+
                     if isinstance(result, str):
                         st.error(result)
-                        st.subheader("OCR 原始识别文本")
-                        st.json(st.session_state.raw_ocr_data)
+                        with st.expander("点击查看原始识别数据"): st.json(ocr_data)
                     else:
                         st.session_state.booking_info = result
                         st.session_state.ocr_step = 1
-                        st.success("表格解析成功！请在下方审核并修正数据。")
-                        st.rerun() # 重新运行以显示下一步
+                        st.success("信息解析成功！请在下方审核并修正数据。")
+                        st.rerun()
                 else:
                     st.session_state.ocr_step = 0
     
-    # 步骤1：审核表格
     if st.session_state.ocr_step >= 1:
         st.markdown("---")
         st.subheader("第 1 步：审核结构化表格")
@@ -249,24 +250,11 @@ def run_ocr_app_detailed():
         for i, group in enumerate(info.get('booking_groups', [])):
             st.markdown(f"#### 日期组 {i+1}")
             col1, col2 = st.columns(2)
-            with col1:
-                new_arrival = st.text_input("到达日期", value=group['arrival_raw'], key=f"arrival_{i}")
-                info['booking_groups'][i]['arrival_raw'] = new_arrival
-            with col2:
-                new_departure = st.text_input("离开日期", value=group['departure_raw'], key=f"departure_{i}")
-                info['booking_groups'][i]['departure_raw'] = new_departure
+            with col1: info['booking_groups'][i]['arrival_raw'] = st.text_input("到达日期", value=group['arrival_raw'], key=f"arrival_{i}")
+            with col2: info['booking_groups'][i]['departure_raw'] = st.text_input("离开日期", value=group['departure_raw'], key=f"departure_{i}")
 
-            # 使用可编辑的数据表格让用户修正
-            edited_df = st.data_editor(
-                group['dataframe'], 
-                key=f"editor_{i}", 
-                num_rows="dynamic", 
-                use_container_width=True,
-                column_config={
-                    "房数": st.column_config.NumberColumn("房数", format="%d", required=True),
-                    "定价": st.column_config.NumberColumn("定价", format="%d", required=True),
-                }
-            )
+            edited_df = st.data_editor(group['dataframe'], key=f"editor_{i}", num_rows="dynamic", use_container_width=True,
+                column_config={"房数": st.column_config.NumberColumn(required=True), "定价": st.column_config.NumberColumn(required=True)})
             info['booking_groups'][i]['dataframe'] = edited_df
         
         st.markdown("---")
@@ -280,10 +268,8 @@ def run_ocr_app_detailed():
             st.code(final_speech, language=None)
 
         if st.button("返回并上传新图片"):
-            # 清理 session state
             for key in ['ocr_step', 'booking_info', 'raw_ocr_data']:
-                if key in st.session_state:
-                    del st.session_state[key]
+                if key in st.session_state: del st.session_state[key]
             st.rerun()
 
 # ==============================================================================
@@ -364,7 +350,7 @@ def run_comparison_app():
             return [style] * len(row)
         return [''] * len(row)
 
-    st.title("炼狱金陵/金陵至尊必修剑谱 - 比对平台")
+    st.title("金陵工具箱 - 比对平台")
     st.info("全新模式：结果以独立的标签页展示，并内置智能日期统一引擎，比对更精准！")
 
     st.header("第 1 步: 上传文件")
@@ -516,7 +502,7 @@ def run_comparison_app():
 # ==============================================================================
 def run_analyzer_app():
     """ [关键修正] 完全按照用户提供的代码和期望的输出格式恢复此应用 """
-    st.title("炼狱金陵/金陵至尊必修剑谱 - 报告分析器")
+    st.title("金陵工具箱 - 报告分析器")
     st.markdown("---伯爵酒店团队报表分析工具---")
 
     uploaded_files = st.file_uploader("请上传您的 Excel 报告文件 (.xlsx)", type=["xlsx"], accept_multiple_files=True, key="analyzer_uploader")
@@ -666,7 +652,7 @@ def process_data(uploaded_file):
 
 def run_data_analysis_app():
     """重制版酒店数据分析应用，支持动态价格矩阵和每日到店统计。"""
-    st.title("炼狱金陵/金陵至尊必修剑谱 - 数据分析驾驶舱")
+    st.title("金陵工具箱 - 数据分析驾驶舱")
     
     uploaded_file = st.file_uploader("上传您的Excel文件", type=["xlsx", "xls"], key="data_analysis_uploader")
 
@@ -880,7 +866,7 @@ def run_data_analysis_app():
 # --- [新增] APP 5: 早班话术生成器 ---
 # ==============================================================================
 def run_morning_briefing_app():
-    st.title("炼狱金陵/金陵至尊必修剑谱 - 早班话术生成器")
+    st.title("金陵工具箱 - 早班话术生成器")
 
     st.subheader("数据输入")
     
@@ -926,7 +912,7 @@ def run_morning_briefing_app():
 # --- [新增] APP 6: 常用话术复制器 ---
 # ==============================================================================
 def run_common_phrases_app():
-    st.title("炼狱金陵/金陵至尊必修剑谱 - 常用话术")
+    st.title("金陵工具箱 - 常用话术")
     
     phrases = [
         "CA RM TO CREDIT FM",
@@ -950,7 +936,7 @@ def run_common_phrases_app():
 # --- [重构] APP 7: 预算计算器 (表格版) ---
 # ==============================================================================
 def run_budget_calculator_app():
-    st.title("炼狱金陵/金陵至尊必修剑谱 - 预算计算器")
+    st.title("金陵工具箱 - 预算计算器")
     st.info("请在下方表格中输入每日的预计和实际数据，然后点击计算按钮。")
 
     # --- 数据输入表格 ---
@@ -1085,16 +1071,16 @@ def check_password():
 
 
 # --- 主应用路由器 ---
-st.set_page_config(layout="wide", page_title="炼狱金陵/金陵至尊必修剑谱")
+st.set_page_config(layout="wide", page_title="金陵工具箱")
 
 if check_password():
     with st.sidebar:
         app_choice = option_menu(
-            menu_title="炼狱金陵/金陵至尊必修剑谱",
+            menu_title="金陵工具箱",
             options=["OCR 工具", "预算计算器", "比对平台", "报告分析器", "数据分析", "话术生成器", "常用话术"],
             icons=["camera-reels-fill", "calculator", "kanban", "clipboard-data", "graph-up-arrow", "blockquote-left", "card-text"],
             menu_icon="tools",
-            default_index=1, # 默认选择预算计算器
+            default_index=0,
         )
 
     st.sidebar.markdown("---")
@@ -1114,5 +1100,4 @@ if check_password():
         run_morning_briefing_app()
     elif app_choice == "常用话术":
         run_common_phrases_app()
-
 
