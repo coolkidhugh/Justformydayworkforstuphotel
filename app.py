@@ -925,6 +925,137 @@ def run_common_phrases_app():
 
 
 # ==============================================================================
+# --- [新增] APP 7: OCR 预算计算器 ---
+# ==============================================================================
+def run_budget_calculator_app():
+    st.title("炼狱金陵/金陵至尊必修剑谱 - OCR 预算计算器")
+
+    # --- OCR 引擎函数 (通用版) ---
+    def get_ocr_text_from_aliyun_general(image: Image.Image) -> str:
+        if not ALIYUN_SDK_AVAILABLE:
+            st.error("错误：阿里云 SDK 未安装。")
+            return None
+        if "aliyun_credentials" not in st.secrets:
+            st.error("错误：阿里云凭证未在 Secrets 中配置。")
+            return None
+        
+        access_key_id = st.secrets.aliyun_credentials.get("access_key_id")
+        access_key_secret = st.secrets.aliyun_credentials.get("access_key_secret")
+        if not access_key_id or not access_key_secret:
+            st.error("错误：阿里云 AccessKey 未在 Secrets 中正确配置。")
+            return None
+            
+        try:
+            config = open_api_models.Config(
+                access_key_id=access_key_id,
+                access_key_secret=access_key_secret,
+                endpoint='ocr-api.cn-hangzhou.aliyuncs.com'
+            )
+            client = OcrClient(config)
+            buffered = io.BytesIO()
+            if image.mode == 'RGBA': image = image.convert('RGB')
+            image.save(buffered, format="PNG")
+            buffered.seek(0)
+            request = ocr_models.RecognizeGeneralRequest(body=buffered)
+            response = client.recognize_general(request)
+            if response.status_code == 200 and response.body and response.body.data:
+                return json.loads(response.body.data).get('content', '')
+            else:
+                raise Exception(f"阿里云 OCR API 返回错误")
+        except Exception as e:
+            st.error(f"调用阿里云 OCR API 失败: {e}")
+            return None
+
+    # --- 百分比提取函数 ---
+    def extract_budget_percentages(text: str):
+        data = {"actual": 0.0, "forecast": 0.0, "monday_forecast": 0.0}
+        percent_pattern = re.compile(r'(\d+\.\d+)%')
+        
+        for line in text.split('\n'):
+            percentages = percent_pattern.findall(line)
+            if not percentages: continue
+            
+            last_percent = float(percentages[-1])
+            
+            if "当日实际" in line:
+                data["actual"] = last_percent
+            elif "当日预计" in line:
+                data["forecast"] = last_percent
+            elif "周一预计" in line:
+                data["monday_forecast"] = last_percent
+        return data
+
+    # --- Streamlit UI ---
+    if 'budget_step' not in st.session_state:
+        st.session_state.budget_step = 0
+
+    uploaded_file = st.file_uploader("上传预算截图", type=["png", "jpg", "jpeg"])
+
+    if uploaded_file:
+        if st.button("1. 提取文本"):
+            st.session_state.budget_step = 1
+            with st.spinner("正在识别图片..."):
+                ocr_text = get_ocr_text_from_aliyun_general(Image.open(uploaded_file))
+                if ocr_text:
+                    st.session_state.budget_ocr_text = ocr_text
+                    st.success("文本提取成功！")
+                else:
+                    st.session_state.budget_step = 0
+    
+    if st.session_state.budget_step >= 1:
+        st.subheader("第1步：审核原始文本")
+        edited_text = st.text_area("在此处修正 OCR 结果:", value=st.session_state.get('budget_ocr_text', ''), height=200)
+        st.session_state.edited_budget_text = edited_text
+
+        if st.button("2. 解析数据"):
+            extracted_data = extract_budget_percentages(st.session_state.edited_budget_text)
+            st.session_state.budget_data = extracted_data
+            st.session_state.budget_step = 2
+            st.success("数据解析成功！")
+
+    if st.session_state.budget_step >= 2:
+        st.subheader("第2步：审核数据")
+        data = st.session_state.budget_data
+        
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            actual = st.number_input("当日实际 (%)", value=data.get("actual", 0.0), format="%.2f")
+        with col2:
+            forecast = st.number_input("当日预计 (%)", value=data.get("forecast", 0.0), format="%.2f")
+        with col3:
+            monday_forecast = st.number_input("周一预计 (%)", value=data.get("monday_forecast", 0.0), format="%.2f")
+
+        st.subheader("第3步：计算结果")
+        if st.button("计算"):
+            st.session_state.budget_step = 3
+            st.session_state.final_budget_data = {
+                "actual": actual,
+                "forecast": forecast,
+                "monday_forecast": monday_forecast
+            }
+    
+    if st.session_state.budget_step >= 3:
+        final_data = st.session_state.final_budget_data
+        actual = final_data["actual"]
+        forecast = final_data["forecast"]
+        monday_forecast = final_data["monday_forecast"]
+        
+        daily_increase = actual - forecast
+        weekly_increase = actual - monday_forecast
+        
+        st.markdown("---")
+        st.subheader("最终计算结果")
+        res_col1, res_col2, res_col3 = st.columns(3)
+        with res_col1:
+            st.metric(label="当日实际", value=f"{actual:.2f}%")
+        with res_col2:
+            st.metric(label="当日增加率", value=f"{daily_increase:.2f}%", delta=f"{daily_increase:.2f}%")
+        with res_col3:
+            st.metric(label="周增加率", value=f"{weekly_increase:.2f}%", delta=f"{weekly_increase:.2f}%")
+
+
+
+# ==============================================================================
 # --- 全局函数和主应用路由器 ---
 # ==============================================================================
 # [关键修正] 恢复 to_excel 辅助函数
@@ -977,8 +1108,8 @@ if check_password():
     with st.sidebar:
         app_choice = option_menu(
             menu_title="炼狱金陵/金陵至尊必修剑谱",
-            options=["OCR 工具", "比对平台", "报告分析器", "数据分析", "话术生成器", "常用话术"],
-            icons=["camera-reels-fill", "kanban", "clipboard-data", "graph-up-arrow", "blockquote-left", "card-text"],
+            options=["OCR 工具", "预算计算器", "比对平台", "报告分析器", "数据分析", "话术生成器", "常用话术"],
+            icons=["camera-reels-fill", "calculator", "kanban", "clipboard-data", "graph-up-arrow", "blockquote-left", "card-text"],
             menu_icon="tools",
             default_index=0,
         )
@@ -988,6 +1119,8 @@ if check_password():
 
     if app_choice == "OCR 工具":
         run_ocr_app_detailed()
+    elif app_choice == "预算计算器":
+        run_budget_calculator_app()
     elif app_choice == "比对平台":
         run_comparison_app()
     elif app_choice == "报告分析器":
