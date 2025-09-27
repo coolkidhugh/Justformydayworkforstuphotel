@@ -184,7 +184,7 @@ def analyze_reports_ultimate(file_paths):
     return final_summary_lines, unknown_codes_collection
 
 # ==============================================================================
-# --- APP 1: OCR 工具 (V7 - 稳定版) ---
+# --- APP 1: OCR 工具 (V8 - 流程优化版) ---
 # ==============================================================================
 def run_ocr_app_detailed():
     """Contains all logic and UI for the Detailed OCR Sales Notification Generator."""
@@ -205,6 +205,7 @@ def run_ocr_app_detailed():
     @st.cache_data(show_spinner=False)
     def get_ocr_data_from_aliyun(_image_bytes):
         image = Image.open(io.BytesIO(_image_bytes))
+        # ... (rest of the function is unchanged)
         if not ALIYUN_SDK_AVAILABLE:
             st.error("错误：阿里云 SDK 未安装。")
             return None
@@ -237,6 +238,7 @@ def run_ocr_app_detailed():
 
     # --- 从纯文本中提取信息 ---
     def extract_booking_info_from_text(ocr_text: str):
+        # ... (function is unchanged)
         if not ocr_text: return "错误：文本内容为空。"
         team_name_pattern = re.compile(r'((?:CON|FIT|WA)\d+\s*/\s*[\u4e00-\u9fa5\w]+)', re.IGNORECASE)
         team_name_match = team_name_pattern.search(ocr_text)
@@ -269,6 +271,7 @@ def run_ocr_app_detailed():
 
     # --- 话术生成 ---
     def format_notification_speech(team_name, team_type, booking_groups, salesperson):
+        # ... (function is unchanged)
         def format_date_range(arr_str, dep_str):
             try:
                 arr_month, arr_day = arr_str.split('/')
@@ -293,84 +296,74 @@ def run_ocr_app_detailed():
 
     uploaded_file = st.file_uploader("上传图片文件", type=["png", "jpg", "jpeg", "bmp"], key="ocr_uploader")
 
-    # 如果上传了新文件，重置流程
-    if uploaded_file and st.session_state.get('last_file_name') != uploaded_file.name:
-        st.session_state.ocr_step = 1
-        st.session_state.last_file_name = uploaded_file.name
-        st.session_state.image_bytes = uploaded_file.getvalue()
-        # 清理旧数据
-        for key in ['raw_ocr_text', 'edited_ocr_text', 'booking_info']:
-            if key in st.session_state:
-                del st.session_state[key]
-    
-    # 阶段 1: 显示图片和提取按钮
-    if st.session_state.ocr_step == 1:
-        st.image(st.session_state.image_bytes, use_container_width=True)
-        if st.button("1. 从图片提取文本"):
-            with st.spinner('正在调用阿里云 OCR API...'):
-                ocr_data = get_ocr_data_from_aliyun(st.session_state.image_bytes)
-                if ocr_data and ocr_data.get('content'):
-                    st.session_state.raw_ocr_text = ocr_data.get('content')
-                    st.session_state.ocr_step = 2
-                    st.rerun()
+    # [关键修正] 彻底重构流程控制，避免因 rerun 导致的 session_state 问题
+    if uploaded_file is not None:
+        # 只要有文件，就显示图片
+        image_bytes = uploaded_file.getvalue()
+        st.image(image_bytes, use_container_width=True)
+
+        # 如果还没有识别结果，就显示“提取”按钮
+        if 'raw_ocr_text' not in st.session_state or st.session_state.get('current_file_name') != uploaded_file.name:
+            if st.button("1. 从图片提取文本"):
+                st.session_state.current_file_name = uploaded_file.name
+                with st.spinner('正在调用阿里云 OCR API...'):
+                    ocr_data = get_ocr_data_from_aliyun(image_bytes)
+                    if ocr_data and ocr_data.get('content'):
+                        st.session_state.raw_ocr_text = ocr_data.get('content')
+                        st.rerun() # 拿到结果后刷新一次，显示下面的编辑框
+                    else:
+                        st.error("OCR 识别失败或未能返回任何文本内容。")
+                        # 清理状态以允许重试
+                        if 'raw_ocr_text' in st.session_state:
+                            del st.session_state.raw_ocr_text
+        
+        # 如果已经有了识别结果，就显示编辑和解析部分
+        if 'raw_ocr_text' in st.session_state and st.session_state.get('current_file_name') == uploaded_file.name:
+            st.subheader("第 1 步：审核并编辑识别的原始文本")
+            edited_text = st.text_area(
+                "您可以直接在此处修改识别结果：",
+                value=st.session_state.raw_ocr_text,
+                height=250,
+                key="edited_text_area"
+            )
+            
+            if st.button("2. 从文本解析表格"):
+                result = extract_booking_info_from_text(edited_text)
+                if isinstance(result, str):
+                    st.error(result)
+                    if 'booking_info' in st.session_state:
+                         del st.session_state['booking_info']
                 else:
-                    st.error("OCR 识别失败或未能返回任何文本内容。")
-
-    # 阶段 2: 编辑文本和解析按钮
-    elif st.session_state.ocr_step == 2:
-        st.image(st.session_state.image_bytes, use_container_width=True)
-        st.subheader("第 1 步：审核并编辑识别的原始文本")
-        edited_text = st.text_area(
-            "您可以直接在此处修改识别结果，确保每条记录占一行，然后点击解析按钮：",
-            value=st.session_state.get('raw_ocr_text', ''),
-            height=250
-        )
-        if st.button("2. 从文本解析表格"):
-            st.session_state.edited_ocr_text = edited_text
-            result = extract_booking_info_from_text(st.session_state.edited_ocr_text)
-            if isinstance(result, str):
-                st.error(result)
-            else:
-                st.session_state.booking_info = result
-                st.session_state.ocr_step = 3
-                st.rerun()
+                    st.session_state.booking_info = result
+                    st.success("文本解析成功！请审核下方表格。")
+            
+            # 如果解析成功，显示最终审核表格
+            if 'booking_info' in st.session_state:
+                st.markdown("---")
+                st.subheader("第 2 步：审核结构化表格")
+                info = st.session_state.booking_info
                 
-    # 阶段 3: 审核表格并生成话术
-    elif st.session_state.ocr_step == 3:
-        st.image(st.session_state.image_bytes, use_container_width=True)
-        st.subheader("第 2 步：审核结构化表格")
-        info = st.session_state.booking_info
-        
-        info['team_name'] = st.text_input("团队名称", value=info.get('team_name', ''), key="team_name_final")
-        
-        for i, group in enumerate(info.get('booking_groups', [])):
-            st.markdown(f"#### 日期组 {i+1}")
-            col1, col2 = st.columns(2)
-            with col1: info['booking_groups'][i]['arrival_raw'] = st.text_input("到达日期", value=group['arrival_raw'], key=f"arrival_{i}")
-            with col2: info['booking_groups'][i]['departure_raw'] = st.text_input("离开日期", value=group['departure_raw'], key=f"departure_{i}")
+                info['team_name'] = st.text_input("团队名称", value=info.get('team_name', ''), key="team_name_final")
+                
+                for i, group in enumerate(info.get('booking_groups', [])):
+                    st.markdown(f"#### 日期组 {i+1}")
+                    col1, col2 = st.columns(2)
+                    with col1: info['booking_groups'][i]['arrival_raw'] = st.text_input("到达日期", value=group['arrival_raw'], key=f"arrival_{i}")
+                    with col2: info['booking_groups'][i]['departure_raw'] = st.text_input("离开日期", value=group['departure_raw'], key=f"departure_{i}")
 
-            edited_df = st.data_editor(group['dataframe'], key=f"editor_{i}", num_rows="dynamic", use_container_width=True,
-                column_config={"房数": st.column_config.NumberColumn(required=True), "定价": st.column_config.NumberColumn(required=True)})
-            info['booking_groups'][i]['dataframe'] = edited_df
-        
-        st.markdown("---")
-        st.subheader("第 3 步：生成最终话术")
-        selected_salesperson = st.selectbox("选择对应销售", options=SALES_LIST)
+                    edited_df = st.data_editor(group['dataframe'], key=f"editor_{i}", num_rows="dynamic", use_container_width=True,
+                        column_config={"房数": st.column_config.NumberColumn(required=True), "定价": st.column_config.NumberColumn(required=True)})
+                    info['booking_groups'][i]['dataframe'] = edited_df
+                
+                st.markdown("---")
+                st.subheader("第 3 步：生成最终话术")
+                selected_salesperson = st.selectbox("选择对应销售", options=SALES_LIST)
 
-        if st.button("生成最终话术"):
-            final_speech = format_notification_speech(info['team_name'], info['team_type'], info['booking_groups'], selected_salesperson)
-            st.subheader("生成成功！")
-            st.success(final_speech)
-            st.code(final_speech, language=None)
-
-    # 重置按钮 (在任何处理阶段都显示)
-    if st.session_state.ocr_step > 0:
-        if st.button("上传新图片 (重置)"):
-            keys_to_clear = ['ocr_step', 'last_file_name', 'image_bytes', 'raw_ocr_text', 'edited_ocr_text', 'booking_info']
-            for key in keys_to_clear:
-                if key in st.session_state:
-                    del st.session_state[key]
-            st.rerun()
+                if st.button("生成最终话术"):
+                    final_speech = format_notification_speech(info['team_name'], info['team_type'], info['booking_groups'], selected_salesperson)
+                    st.subheader("生成成功！")
+                    st.success(final_speech)
+                    st.code(final_speech, language=None)
 
 # ==============================================================================
 # --- APP 2: 多维审核比对平台 ---
@@ -902,9 +895,9 @@ def run_daily_occupancy_app():
         initial_data = {
             "日期": [d.strftime("%m/%d") for d in days],
             "星期": [weekdays_zh[d.weekday()] for d in days],
-            "当日预计": [0.0] * 7,
-            "当日实际": [0.0] * 7,
-            "周一预计": [0.0] * 7,
+            "当日预计 (%)": [0.0] * 7,
+            "当日实际 (%)": [0.0] * 7,
+            "周一预计 (%)": [0.0] * 7,
             "平均房价": [0.0] * 7
         }
         input_df = pd.DataFrame(initial_data)
@@ -915,10 +908,10 @@ def run_daily_occupancy_app():
             num_rows="fixed",
             use_container_width=True,
             column_config={
-                "当日预计": st.column_config.NumberColumn(format="%.2f"),
-                "当日实际": st.column_config.NumberColumn(format="%.2f"),
-                "周一预计": st.column_config.NumberColumn(format="%.2f"),
-                "平均房价": st.column_config.NumberColumn(format="%.2f"),
+                "当日预计 (%)": st.column_config.NumberColumn(format="%.2f%%"),
+                "当日实际 (%)": st.column_config.NumberColumn(format="%.2f%%"),
+                "周一预计 (%)": st.column_config.NumberColumn(format="%.2f%%"),
+                "平均房价": st.column_config.NumberColumn("平均房价 (元)", format="%.2f"),
             }
         )
         return edited_df
@@ -937,40 +930,39 @@ def run_daily_occupancy_app():
             st.subheader(f"{name} - 计算结果")
             try:
                 result_df = df.copy()
-                numeric_cols = ["当日预计", "当日实际", "周一预计", "平均房价"]
-                for col in numeric_cols:
-                    result_df[col] = pd.to_numeric(result_df[col], errors='coerce').fillna(0)
+                # 使用新的列名进行计算
+                result_df["当日增加率 (%)"] = result_df["当日实际 (%)"] - result_df["当日预计 (%)"]
+                result_df["增加百分率 (%)"] = result_df["当日实际 (%)"] - result_df["周一预计 (%)"]
                 
-                monday_forecast_val = result_df['周一预计'].iloc[0]
-                if monday_forecast_val != 0:
-                    result_df['周一预计'] = monday_forecast_val
-
-                result_df["当日增加率"] = result_df["当日实际"] - result_df["当日预计"]
-                result_df["增加百分率"] = result_df["当日实际"] - result_df["周一预计"]
-                
+                # 定义最终展示的列和顺序
                 display_columns = [
                     "日期", "星期", 
-                    "当日预计", "当日实际", "当日增加率", 
-                    "周一预计", "增加百分率", "平均房价"
+                    "当日预计 (%)", "当日实际 (%)", "当日增加率 (%)", 
+                    "周一预计 (%)", "增加百分率 (%)", "平均房价"
                 ]
                 result_df_display = result_df[display_columns]
 
+                # 格式化输出
                 st.dataframe(result_df_display.style.format({
-                    "当日预计": "{:.2f}", "当日实际": "{:.2f}", "当日增加率": "{:+.2f}",
-                    "周一预计": "{:.2f}", "增加百分率": "{:+.2f}", "平均房价": "{:.2f}"
+                    "当日预计 (%)": "{:.2f}%", 
+                    "当日实际 (%)": "{:.2f}%", 
+                    "当日增加率 (%)": "{:+.2f}%",
+                    "周一预计 (%)": "{:.2f}%", 
+                    "增加百分率 (%)": "{:+.2f}%", 
+                    "平均房价": "{:.2f}"
                 }))
                 
                 st.markdown("---")
                 st.subheader(f"{name} - 本周总计")
                 
-                total_actual = result_df['当日实际'].sum()
-                total_forecast = result_df['当日预计'].sum()
+                total_actual = result_df['当日实际 (%)'].sum()
+                total_forecast = result_df['当日预计 (%)'].sum()
                 total_increase = total_actual - total_forecast
                 
                 col1, col2, col3 = st.columns(3)
-                col1.metric("本周实际", f"{total_actual:.2f}")
-                col2.metric("本周预测", f"{total_forecast:.2f}")
-                col3.metric("实际增加", f"{total_increase:+.2f}")
+                col1.metric("本周实际 (加总)", f"{total_actual:.2f}%")
+                col2.metric("本周预测 (加总)", f"{total_forecast:.2f}%")
+                col3.metric("实际增加 (点数)", f"{total_increase:+.2f}")
 
             except (ValueError, IndexError, KeyError) as e:
                 st.error(f"在计算 {name} 数据时发生错误: {e}")
@@ -1048,41 +1040,4 @@ if check_password():
         run_morning_briefing_app()
     elif app_choice == "常用话术":
         run_common_phrases_app()
-" code between  and  in the most up-to-date Canvas "金陵工具箱" document above and am asking a query about/based on this code below.
-Instructions to follow:
-  * Don't output/edit the document if the query is Direct/Simple. For example, if the query asks for a simple explanation, output a direct answer.
-  * Make sure to **edit** the document if the query shows the intent of editing the document, in which case output the entire edited document, **not just that section or the edits**.
-    * Don't output the same document/empty document and say that you have edited it.
-    * Don't change unrelated code in the document.
-  * Don't output  and  in your final response.
-  * Any references like "this" or "selected code" refers to the code between  and  tags.
-  * Just acknowledge my request in the introduction.
-  * Make sure to refer to the document as "Canvas" in your response.
-
-TypeError: This app has encountered an error. The original error message is redacted to prevent data leaks. Full error details have been recorded in the logs (if you're on Streamlit Cloud, click on 'Manage app' in the lower right of your app).
-
-Traceback:
-File "/home/adminuser/venv/lib/python3.13/site-packages/streamlit/runtime/scriptrunner/script_runner.py", line 584, in _run_script
-    exec(code, module.__dict__)
-    ~~~~^^^^^^^^^^^^^^^^^^^^^^^
-File "/mount/src/justformydayworkforstuphotel/app.py", line 1048, in <module>
-    run_ocr_app_detailed()
-    ~~~~~~~~~~~~~~~~~~~~^^
-File "/mount/src/justformydayworkforstuphotel/app.py", line 377, in run_ocr_app_detailed
-    if 'uploaded_image_bytes' in st.session_state and st.session_state.uploaded_image_bytes:
-    ~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-File "/home/adminuser/venv/lib/python3.13/site-packages/streamlit/runtime/metrics_util.py", line 397, in wrapped_func
-    result = non_optional_func(*args, **kwargs)
-File "/home/adminuser/venv/lib/python3.13/site-packages/streamlit/elements/image.py", line 186, in image
-    marshall_images(
-    ~~~~~~~~~~~~~~~~
-File "/home/adminuser/venv/lib/python3.13/site-packages/streamlit/elements/image.py", line 391, in marshall_images
-    image = _BytesIO_to_bytes(image)
-    ~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^
-File "/home/adminuser/venv/lib/python3.13/site-packages/streamlit/elements/image.py", line 470, in _BytesIO_to_bytes
-    return image.getvalue()
-           ^^^^^^^^^^^^^^^^
-AttributeError: 'bytes' object has no attribute 'getvalue'
-AttributeError: 'bytes' object has no attribute 'getvalue'
-i cant use this app
 
