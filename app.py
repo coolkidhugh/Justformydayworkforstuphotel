@@ -202,7 +202,9 @@ def run_ocr_app_detailed():
     ]
 
     # --- OCR 引擎函数 ---
-    def get_ocr_data_from_aliyun(image: Image.Image):
+    @st.cache_data(show_spinner=False)
+    def get_ocr_data_from_aliyun(_image_bytes):
+        image = Image.open(io.BytesIO(_image_bytes))
         if not ALIYUN_SDK_AVAILABLE:
             st.error("错误：阿里云 SDK 未安装。")
             return None
@@ -282,60 +284,61 @@ def run_ocr_app_detailed():
             speech_parts.append(f"{date_range_string} {''.join(rooms_list)}")
         return f"新增{team_type} {team_name} {' '.join(speech_parts)} {salesperson}销售通知"
 
-    # --- Streamlit 主应用 ---
+    # --- UI & 流程控制 ---
     st.title("金陵工具箱 - OCR 工具")
     
+    # 初始化
     if 'ocr_step' not in st.session_state:
-        st.session_state.ocr_step = 0 
+        st.session_state.ocr_step = 0
 
-    uploaded_file = st.file_uploader("上传图片文件", type=["png", "jpg", "jpeg", "bmp"], key="ocr_uploader_detailed")
+    uploaded_file = st.file_uploader("上传图片文件", type=["png", "jpg", "jpeg", "bmp"], key="ocr_uploader")
 
-    # [关键修正] 仅在有新文件上传时更新 session_state
-    if uploaded_file is not None:
-        st.session_state.uploaded_image_bytes = uploaded_file.getvalue()
-
-    # --- 步骤 0: 按钮触发 ---
-    if st.session_state.get('uploaded_image_bytes') and st.session_state.ocr_step == 0:
-        st.image(st.session_state.uploaded_image_bytes, use_container_width=True)
+    # 如果上传了新文件，重置流程
+    if uploaded_file and st.session_state.get('last_file_name') != uploaded_file.name:
+        st.session_state.ocr_step = 1
+        st.session_state.last_file_name = uploaded_file.name
+        st.session_state.image_bytes = uploaded_file.getvalue()
+        # 清理旧数据
+        for key in ['raw_ocr_text', 'edited_ocr_text', 'booking_info']:
+            if key in st.session_state:
+                del st.session_state[key]
+    
+    # 阶段 1: 显示图片和提取按钮
+    if st.session_state.ocr_step == 1:
+        st.image(st.session_state.image_bytes, use_container_width=True)
         if st.button("1. 从图片提取文本"):
             with st.spinner('正在调用阿里云 OCR API...'):
-                ocr_data = get_ocr_data_from_aliyun(Image.open(io.BytesIO(st.session_state.uploaded_image_bytes)))
+                ocr_data = get_ocr_data_from_aliyun(st.session_state.image_bytes)
                 if ocr_data and ocr_data.get('content'):
                     st.session_state.raw_ocr_text = ocr_data.get('content')
-                    st.session_state.ocr_step = 1
-                    st.rerun() # 使用 rerun 清理界面并进入下一步
+                    st.session_state.ocr_step = 2
+                    st.rerun()
                 else:
                     st.error("OCR 识别失败或未能返回任何文本内容。")
-                    st.session_state.ocr_step = 0
-    
-    # --- 步骤 1: 审核文本 ---
-    elif st.session_state.ocr_step == 1:
+
+    # 阶段 2: 编辑文本和解析按钮
+    elif st.session_state.ocr_step == 2:
+        st.image(st.session_state.image_bytes, use_container_width=True)
         st.subheader("第 1 步：审核并编辑识别的原始文本")
-        if 'uploaded_image_bytes' in st.session_state and st.session_state.uploaded_image_bytes:
-            st.image(st.session_state.uploaded_image_bytes, use_container_width=True)
-        
         edited_text = st.text_area(
             "您可以直接在此处修改识别结果，确保每条记录占一行，然后点击解析按钮：",
             value=st.session_state.get('raw_ocr_text', ''),
             height=250
         )
-        st.session_state.edited_ocr_text = edited_text
-
         if st.button("2. 从文本解析表格"):
+            st.session_state.edited_ocr_text = edited_text
             result = extract_booking_info_from_text(st.session_state.edited_ocr_text)
             if isinstance(result, str):
                 st.error(result)
             else:
                 st.session_state.booking_info = result
-                st.session_state.ocr_step = 2
+                st.session_state.ocr_step = 3
                 st.rerun()
-
-    # --- 步骤 2: 审核表格并生成 ---
-    elif st.session_state.ocr_step == 2:
+                
+    # 阶段 3: 审核表格并生成话术
+    elif st.session_state.ocr_step == 3:
+        st.image(st.session_state.image_bytes, use_container_width=True)
         st.subheader("第 2 步：审核结构化表格")
-        if 'uploaded_image_bytes' in st.session_state and st.session_state.uploaded_image_bytes:
-            st.image(st.session_state.uploaded_image_bytes, use_container_width=True)
-
         info = st.session_state.booking_info
         
         info['team_name'] = st.text_input("团队名称", value=info.get('team_name', ''), key="team_name_final")
@@ -360,16 +363,14 @@ def run_ocr_app_detailed():
             st.success(final_speech)
             st.code(final_speech, language=None)
 
-    # --- 重置按钮 ---
+    # 重置按钮 (在任何处理阶段都显示)
     if st.session_state.ocr_step > 0:
-        if st.button("返回并上传新图片"):
-            # 清理所有相关状态
-            keys_to_clear = ['ocr_step', 'booking_info', 'raw_ocr_text', 'edited_ocr_text', 'uploaded_image_bytes']
+        if st.button("上传新图片 (重置)"):
+            keys_to_clear = ['ocr_step', 'last_file_name', 'image_bytes', 'raw_ocr_text', 'edited_ocr_text', 'booking_info']
             for key in keys_to_clear:
                 if key in st.session_state:
                     del st.session_state[key]
             st.rerun()
-
 
 # ==============================================================================
 # --- APP 2: 多维审核比对平台 ---
@@ -636,9 +637,17 @@ def run_analyzer_app():
                 for code, count in unknown_codes.items():
                     st.write(f"代码: '{code}' (出现了 {count} 次)")
             
+            # 清理临时文件
             for f_path in file_paths:
-                os.remove(f_path)
-            os.rmdir(temp_dir)
+                try:
+                    os.remove(f_path)
+                except OSError as e:
+                    st.warning(f"无法删除临时文件 {f_path}: {e}")
+            try:
+                os.rmdir(temp_dir)
+            except OSError as e:
+                st.warning(f"无法删除临时文件夹 {temp_dir}: {e}")
+
 
     else:
         st.info("请上传一个或多个 Excel 文件以开始分析。")
@@ -1039,4 +1048,41 @@ if check_password():
         run_morning_briefing_app()
     elif app_choice == "常用话术":
         run_common_phrases_app()
+" code between  and  in the most up-to-date Canvas "金陵工具箱" document above and am asking a query about/based on this code below.
+Instructions to follow:
+  * Don't output/edit the document if the query is Direct/Simple. For example, if the query asks for a simple explanation, output a direct answer.
+  * Make sure to **edit** the document if the query shows the intent of editing the document, in which case output the entire edited document, **not just that section or the edits**.
+    * Don't output the same document/empty document and say that you have edited it.
+    * Don't change unrelated code in the document.
+  * Don't output  and  in your final response.
+  * Any references like "this" or "selected code" refers to the code between  and  tags.
+  * Just acknowledge my request in the introduction.
+  * Make sure to refer to the document as "Canvas" in your response.
+
+TypeError: This app has encountered an error. The original error message is redacted to prevent data leaks. Full error details have been recorded in the logs (if you're on Streamlit Cloud, click on 'Manage app' in the lower right of your app).
+
+Traceback:
+File "/home/adminuser/venv/lib/python3.13/site-packages/streamlit/runtime/scriptrunner/script_runner.py", line 584, in _run_script
+    exec(code, module.__dict__)
+    ~~~~^^^^^^^^^^^^^^^^^^^^^^^
+File "/mount/src/justformydayworkforstuphotel/app.py", line 1048, in <module>
+    run_ocr_app_detailed()
+    ~~~~~~~~~~~~~~~~~~~~^^
+File "/mount/src/justformydayworkforstuphotel/app.py", line 377, in run_ocr_app_detailed
+    if 'uploaded_image_bytes' in st.session_state and st.session_state.uploaded_image_bytes:
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+File "/home/adminuser/venv/lib/python3.13/site-packages/streamlit/runtime/metrics_util.py", line 397, in wrapped_func
+    result = non_optional_func(*args, **kwargs)
+File "/home/adminuser/venv/lib/python3.13/site-packages/streamlit/elements/image.py", line 186, in image
+    marshall_images(
+    ~~~~~~~~~~~~~~~~
+File "/home/adminuser/venv/lib/python3.13/site-packages/streamlit/elements/image.py", line 391, in marshall_images
+    image = _BytesIO_to_bytes(image)
+    ~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^
+File "/home/adminuser/venv/lib/python3.13/site-packages/streamlit/elements/image.py", line 470, in _BytesIO_to_bytes
+    return image.getvalue()
+           ^^^^^^^^^^^^^^^^
+AttributeError: 'bytes' object has no attribute 'getvalue'
+AttributeError: 'bytes' object has no attribute 'getvalue'
+i cant use this app
 
