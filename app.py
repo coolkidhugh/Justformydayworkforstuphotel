@@ -8,11 +8,10 @@ import unicodedata
 import os
 import traceback
 from datetime import timedelta, date
-# [关键更新] 导入新的侧边栏组件
+from collections import Counter
 from streamlit_option_menu import option_menu
 
 # --- SDK 依赖 ---
-# requirements.txt needs to include: alibabacloud_ocr_api20210707, pandas, streamlit, pillow, openpyxl, streamlit-option-menu
 try:
     from alibabacloud_ocr_api20210707.client import Client as OcrClient
     from alibabacloud_tea_openapi import models as open_api_models
@@ -22,24 +21,168 @@ try:
 except ImportError:
     ALIYUN_SDK_AVAILABLE = False
 
-
-# --- MOCK FUNCTION for Report Analyzer ---
+# ==============================================================================
+# --- [核心分析逻辑] 真实分析函数 ---
+# ==============================================================================
 def analyze_reports_ultimate(file_paths):
     """
-    一个模拟函数，用于替代缺失的 analyze_excel.py 模块。
-    它会生成一些示例分析结果，模仿用户期望的输出格式。
+    智能解析并动态定位列，对包含多个团队的Excel报告进行详细统计。
+    (究极体：v7 - 修复团队市场码识别逻辑)
     """
-    # Based on user's image: 5b25a5b0e1df25073f860126ea39cca3.png
-    summaries = [
-        "【次日在住】：有效总房数 64 间(共 59 人)，其中会议/公司团队(MGM/MTC)[5个团队，共23间]分布: 金陵楼 17 间, 亚太楼 6 间。(无GTO旅行社房)。",
-        "【次日离店】：有效总房数 240 间(共 251 人)，其中会议/公司团队(MGM/MTC)[9个团队，共232间]分布: 金陵楼 173 间, 亚太楼 58 间, 其他楼 1 间。旅行社(GTO)房[2个团队, 8间, 共12人]分布: 金陵楼 8 间, 亚太楼 0 间。",
-        "【次日到店】：有效总房数 46 间(共 37 人)，其中会议/公司团队(MGM/MTC)[8个团队, 共17间]分布: 金陵楼 1 间, 亚太楼 6 间。(无GTO旅行社房)。",
-        "【后天到店】：有效总房数 0 间(共 0 人)，(无会议/公司团队房)，(无GTO旅行社房)。"
+    # --- 楼栋房型代码规则 ---
+    jinling_room_types = [
+        'DETN', 'DKN', 'DKS', 'DQN', 'DQS', 'DSKN', 'DSTN', 'DTN',
+        'EKN', 'EKS', 'ESN', 'ESS', 'ETN', 'ETS', 'FSB', 'FSC', 'FSN',
+        'STN', 'STS', 'SKN', 'RSN', 'SQS', 'SQN'
     ]
-    # The mock function can return a static result as the core logic is missing
-    unknown_codes = {"PSA": 1}
-    return summaries, unknown_codes
+    yatai_room_types = [
+        'JDEN', 'JDKN', 'JDKS', 'JEKN', 'JESN', 'JESS', 'JETN', 'JETS',
+        'JKN', 'JLKN', 'JTN', 'JTS', 'VCKD', 'VCKN'
+    ]
+    # --- 规则结束 ---
 
+    unknown_codes_collection = Counter()
+    final_summary_lines = []
+
+    if not file_paths:
+        return ["未上传任何文件进行分析。"], unknown_codes_collection
+    
+    for file_path in file_paths:
+        file_base_name = os.path.splitext(os.path.basename(file_path))[0]
+        try:
+            df_raw = pd.read_excel(file_path, header=None, dtype=str)
+            all_bookings = []
+            current_group_name = "未知团队"
+            current_market_code = "无"
+            column_map = {}
+            header_row_index = -1
+
+            for index, row in df_raw.iterrows():
+                row_str = ' '.join(str(cell).strip() for cell in row.dropna() if str(cell).strip())
+                if not row_str:
+                    continue
+
+                if '团体名称:' in row_str:
+                    match = re.search(r'团体名称:\s*(.*?)(?:\s*市场码：|$)', row_str)
+                    if match:
+                        current_group_name = match.group(1).strip()
+                    else:
+                        current_group_name = "未知团队(解析失败)"
+                        
+                    column_map, header_row_index, current_market_code = {}, -1, "无"
+                    
+                    market_match = re.search(r'市场码：\s*([\w-]+)', row_str)
+                    if market_match:
+                        current_market_code = market_match.group(1).strip()
+                    continue
+                
+                if '团体/单位/旅行社/订房中心：' in row_str:
+                    desc_match = re.search(r'团体/单位/旅行社/订房中心：(.*)', row_str)
+                    if desc_match and desc_match.group(1):
+                        current_group_name += " " + desc_match.group(1).strip()
+                    continue
+
+                if '市场码：' in row_str and not '团体名称:' in row_str:
+                    match = re.search(r'市场码：\s*([\w-]+)', row_str)
+                    if match:
+                        current_market_code = match.group(1).strip()
+                    continue
+
+                if '房号' in row_str and '姓名' in row_str and '人数' in row_str:
+                    header_row_index = index
+                    for i, col in enumerate(row):
+                        if pd.notna(col):
+                            column_map[re.sub(r'\s+', '', str(col))] = i
+                    continue
+
+                if header_row_index != -1 and index > header_row_index and not row.dropna().empty:
+                    if '小计' not in row_str:
+                        all_bookings.append({'团队名称': current_group_name, '市场码': current_market_code, 'data': row})
+            
+            if not all_bookings:
+                final_summary_lines.append(f"【{file_base_name}】: 未解析到有效预订数据行。总房数 0 间 (共 0 人)，(无会议/公司团队房). | (无GTO旅行社房).")
+                continue 
+
+            processed_rows = []
+            for item in all_bookings:
+                row_data = item['data']
+                processed_row = {'团队名称': item['团队名称'], '市场码': item['市场码']}
+                for col_name, col_index in column_map.items():
+                    processed_row[col_name] = row_data.get(col_index)
+                processed_rows.append(processed_row)
+            df = pd.DataFrame(processed_rows)
+
+            df['状态'] = df['状态'].astype(str).str.strip()
+            df['市场码'] = df['市场码'].astype(str).str.strip()
+            
+            if '在住' in file_base_name:
+                valid_statuses = ['R', 'I']
+            elif '离店' in file_base_name or '次日离店' in file_base_name or '后天' in file_base_name:
+                valid_statuses = ['I', 'R', 'O']
+            else:
+                valid_statuses = ['R']
+            
+            df_active = df[df['状态'].isin(valid_statuses)].copy()
+
+            df_counted = df_active.copy()
+
+            df_counted['房数'] = pd.to_numeric(df_counted['房数'], errors='coerce').fillna(0)
+            df_counted['人数'] = pd.to_numeric(df_counted['人数'], errors='coerce').fillna(0)
+            df_counted['房类'] = df_counted['房类'].astype(str).str.strip()
+
+            total_rooms = int(df_counted['房数'].sum())
+            total_guests = int(df_counted['人数'].sum())
+
+            def assign_building(room_type):
+                if room_type in yatai_room_types: return '亚太楼'
+                elif room_type in jinling_room_types: return '金陵楼'
+                else:
+                    if room_type and room_type.lower() != 'nan':
+                        unknown_codes_collection.update([room_type])
+                    return '其他楼'
+            df_counted['准确楼栋'] = df_counted['房类'].apply(assign_building)
+
+            meeting_df = df_counted[
+                df_counted['市场码'].str.startswith('MGM', na=False) | 
+                df_counted['市场码'].str.startswith('MTC', na=False)
+            ].copy()
+            
+            meeting_group_count = int(meeting_df['团队名称'].nunique())
+            total_meeting_rooms = int(meeting_df['房数'].sum())
+            meeting_jinling_rooms = int(meeting_df[meeting_df['准确楼栋'] == '金陵楼']['房数'].sum())
+            meeting_yatai_rooms = int(meeting_df[meeting_df['准确楼栋'] == '亚太楼']['房数'].sum())
+            meeting_other_rooms = int(meeting_df[meeting_df['准确楼栋'] == '其他楼']['房数'].sum())
+
+            gto_df = df_counted[df_counted['市场码'].str.startswith('GTO', na=False)].copy()
+            gto_group_count = int(gto_df['团队名称'].nunique())
+            total_gto_rooms = int(gto_df['房数'].sum())
+            total_gto_guests = int(gto_df['人数'].sum())
+            gto_jinling_rooms = int(gto_df[gto_df['准确楼栋'] == '金陵楼']['房数'].sum())
+            gto_yatai_rooms = int(gto_df[gto_df['准确楼栋'] == '亚太楼']['房数'].sum())
+            gto_other_rooms = int(gto_df[gto_df['准确楼栋'] == '其他楼']['房数'].sum())
+
+            summary_parts = [f"【{file_base_name}】: 有效总房数 {total_rooms} 间 (共 {total_guests} 人)"]
+
+            if meeting_group_count > 0:
+                meeting_report = f"会议/公司团队房(MGM/MTC)({meeting_group_count}个团队, 共{total_meeting_rooms}间)分布: 金陵楼 {meeting_jinling_rooms} 间, 亚太楼 {meeting_yatai_rooms} 间"
+                if meeting_other_rooms > 0: meeting_report += f", 其他楼 {meeting_other_rooms} 间"
+                summary_parts.append(f"，其中{meeting_report}.")
+            else:
+                summary_parts.append("，(无会议/公司团队房).")
+
+            if total_gto_rooms > 0:
+                gto_report = f"旅行社(GTO)房({gto_group_count}个团队, {total_gto_rooms}间, 共{total_gto_guests}人)分布: 金陵楼 {gto_jinling_rooms} 间, 亚太楼 {gto_yatai_rooms} 间"
+                if gto_other_rooms > 0: gto_report += f", 其他楼 {gto_other_rooms} 间"
+                summary_parts.append(f" | {gto_report}.")
+            else:
+                summary_parts.append(" | (无GTO旅行社房).")
+
+            final_summary_lines.append("".join(summary_parts))
+
+        except Exception as e:
+            final_summary_lines.append(f"【{file_base_name}】处理失败，错误: {e}")
+
+    return final_summary_lines, unknown_codes_collection
 
 # ==============================================================================
 # --- APP 1: OCR 工具 (V6 - 三步审核流程) ---
@@ -79,7 +222,6 @@ def run_ocr_app_detailed():
             if image.mode == 'RGBA': image = image.convert('RGB')
             image.save(buffered, format="JPEG")
             buffered.seek(0)
-            # [关键修正] 使用通用文字识别接口，稳定性更好
             request = ocr_models.RecognizeGeneralRequest(body=buffered)
             response = client.recognize_general(request)
             if response.status_code == 200 and response.body and response.body.data:
@@ -102,18 +244,17 @@ def run_ocr_app_detailed():
         team_prefix = team_name[:3].upper()
         team_type = TEAM_TYPE_MAP.get(team_prefix, DEFAULT_TEAM_TYPE)
         
-        # 匹配所有状态为R的行
         line_pattern = re.compile(
-            r'^\s*R\s+'                                  # 行必须以 R 开头
-            r'.*?'                                       # 中间任意字符
-            r'\b(' + '|'.join(ALL_ROOM_CODES) + r')\b'   # (组1) 房型
-            r'\s+(\d+)\s+'                               # (组2) 房数
-            r'.*?'                                       # 任意字符
-            r'(\d{1,2}/\d{2})'                           # (组3) 到达日期
-            r'.*?'                                       # 任意字符
-            r'(\d{1,2}/\d{2})'                           # (组4) 离开日期
-            r'.*?'                                       # 任意字符
-            r'(\d+\.\d{2})'                              # (组5) 价格
+            r'^\s*R\s+'                                  
+            r'.*?'                                       
+            r'\b(' + '|'.join(ALL_ROOM_CODES) + r')\b'   
+            r'\s+(\d+)\s+'                               
+            r'.*?'                                       
+            r'(\d{1,2}/\d{2})'                           
+            r'.*?'                                       
+            r'(\d{1,2}/\d{2})'                           
+            r'.*?'                                       
+            r'(\d+\.\d{2})'                              
             , re.IGNORECASE | re.MULTILINE)
             
         matches = line_pattern.findall(ocr_text)
@@ -443,40 +584,35 @@ def run_comparison_app():
 # ==============================================================================
 def run_analyzer_app():
     st.title("📈 团队到店统计")
-    st.markdown("---伯爵酒店团队报表分析工具---")
+    st.markdown("---团队报表分析工具---")
 
     uploaded_files = st.file_uploader("请上传您的 Excel 报告文件 (.xlsx)", type=["xlsx"], accept_multiple_files=True, key="analyzer_uploader")
 
     if uploaded_files:
         st.subheader("分析结果")
         
-        # Create a temporary directory to save uploaded files
         temp_dir = "./temp_uploaded_files"
         os.makedirs(temp_dir, exist_ok=True)
 
         file_paths = []
         for uploaded_file in uploaded_files:
-            # Save the uploaded file to the temporary directory
             temp_file_path = os.path.join(temp_dir, uploaded_file.name)
             with open(temp_file_path, "wb") as f:
                 f.write(uploaded_file.getbuffer())
             file_paths.append(temp_file_path)
 
-        # Define the desired order of keywords
         desired_order = ["次日到达", "次日在住", "次日离店", "后天到达"]
 
-        # Custom sort function
         def sort_key(file_path):
             file_name = os.path.basename(file_path)
             for i, keyword in enumerate(desired_order):
                 if keyword in file_name:
                     return i
-            return len(desired_order) # Files without keywords go to the end
+            return len(desired_order) 
 
-        # Sort the file_paths based on the desired order
         file_paths.sort(key=sort_key)
 
-        if st.button("开始分析"): # Use a button to trigger analysis
+        if st.button("开始分析"):
             with st.spinner("正在分析中，请稍候..."):
                 summaries, unknown_codes = analyze_reports_ultimate(file_paths)
             
@@ -488,7 +624,6 @@ def run_analyzer_app():
                 for code, count in unknown_codes.items():
                     st.write(f"代码: '{code}' (出现了 {count} 次)")
             
-            # Clean up temporary files and directory
             for f_path in file_paths:
                 os.remove(f_path)
             os.rmdir(temp_dir)
@@ -505,11 +640,10 @@ def run_analyzer_app():
     """)
 
 # ==============================================================================
-# --- [最终版] APP 4: 酒店入住数据分析应用 ---
+# --- APP 4: 酒店入住数据分析应用 ---
 # ==============================================================================
 @st.cache_data
 def process_data(uploaded_file):
-    # ... (此函数保持不变)
     df = pd.read_excel(uploaded_file)
     df.columns = [str(col).strip().upper() for col in df.columns]
     required_cols = ['状态', '房类', '房数', '到达', '离开', '房价', '市场码']
@@ -547,7 +681,6 @@ def process_data(uploaded_file):
 
 
 def run_data_analysis_app():
-    # ... (此函数保持不变)
     st.title("金陵工具箱 - 数据分析驾驶舱")
     uploaded_file = st.file_uploader("上传您的Excel文件", type=["xlsx", "xls"], key="data_analysis_uploader")
     if not uploaded_file:
@@ -685,10 +818,9 @@ def run_data_analysis_app():
 
 
 # ==============================================================================
-# --- [新增] APP 5: 早班话术生成器 ---
+# --- APP 5: 早班话术生成器 ---
 # ==============================================================================
 def run_morning_briefing_app():
-    # ... (此函数保持不变)
     st.title("金陵工具箱 - 早班话术生成器")
     st.subheader("数据输入")
     col1, col2 = st.columns(2)
@@ -722,10 +854,9 @@ def run_morning_briefing_app():
         st.code(briefing)
 
 # ==============================================================================
-# --- [新增] APP 6: 常用话术复制器 ---
+# --- APP 6: 常用话术复制器 ---
 # ==============================================================================
 def run_common_phrases_app():
-    # ... (此函数保持不变)
     st.title("金陵工具箱 - 常用话术")
     phrases = ["CA RM TO CREDIT FM", "免预付,房费及3000元以内杂费转淘宝 FM", "房费转携程宏睿 FM", "房价保密,房费转华为 FM", "房费转淘宝 FM", "CA RM TO 兰艳(109789242)金陵卡 FM", "CA RM TO AGODA FM", "CA RM TO CREDIT CARD FM XX-XX/XX(卡号/有效期XX/XX)", "房费转微信 FM", "房费预付杂费自理FM"]
     st.subheader("点击右上角复制图标即可复制话术")
@@ -734,11 +865,12 @@ def run_common_phrases_app():
 
 
 # ==============================================================================
-# --- [重构] APP 7: 预算计算器 (表格版 V2) ---
+# --- APP 7: 预算计算器 ---
 # ==============================================================================
 def run_budget_calculator_app():
     st.title("金陵工具箱 - 预算计算器")
-    st.info("请在下方表格中输入每日的预计和实际数据，然后点击计算按钮。")
+    # [关键修正] 增加置顶说明
+    st.info("计算规则: 当日预计(A), 当日实际(C), 当日增加率(C-A) | 周一预计(E), 当日实际(C), 增加百分率(C-E)")
 
     st.subheader("数据输入")
     
@@ -783,11 +915,9 @@ def run_budget_calculator_app():
             if monday_forecast_val != 0:
                 result_df['周一预计'] = monday_forecast_val
 
-            # [关键修改] 按照用户要求的逻辑进行计算
             result_df["当日增加率"] = result_df["当日实际"] - result_df["当日预计"]
             result_df["增加百分率"] = result_df["当日实际"] - result_df["周一预计"]
             
-            # [关键修改] 调整列顺序以匹配Excel表格的逻辑分组
             display_columns = [
                 "日期", "星期", 
                 "当日预计", "当日实际", "当日增加率", 
@@ -795,7 +925,6 @@ def run_budget_calculator_app():
             ]
             result_df_display = result_df[display_columns].copy()
             
-            # 为了在表格中清晰地展示“周一预计”和“当日实际”的对比，我们可以插入一列
             result_df_display.insert(6, '当日实际(用于周比)', result_df['当日实际'])
 
             st.dataframe(result_df_display.style.format({
