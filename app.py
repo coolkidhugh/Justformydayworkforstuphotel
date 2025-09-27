@@ -91,8 +91,12 @@ def run_ocr_app_detailed():
 
             if response.status_code == 200 and response.body and response.body.data:
                 data = json.loads(response.body.data)
-                raw_text = "\n".join([row['text'] for row in data.get('tables', [{}])[0].get('table_rows', [])])
-                return data, raw_text
+                # Reconstruct raw text from table structure for better readability
+                raw_text = ""
+                if 'tables' in data and data['tables']:
+                    for row in data['tables'][0].get('table_rows', []):
+                        raw_text += row.get('text', '') + '\n'
+                return data, raw_text.strip()
             else:
                 error_message = '无详细信息'
                 if response.body and hasattr(response.body, 'message'):
@@ -133,8 +137,13 @@ def run_ocr_app_detailed():
         departure_idx = find_col_index(header_texts, ["离开", "DEPARTURE"])
         price_idx = find_col_index(header_texts, ["定价", "RATE"])
 
-        if any(idx == -1 for idx in [status_idx, room_type_idx, room_count_idx, arrival_idx, departure_idx, price_idx]):
-            return f"错误：表格缺少必要的列标题。请确保图片清晰且包含'状态', '房类', '房数', '到达', '离开', '定价'。"
+        required_indices = {
+            "状态": status_idx, "房类": room_type_idx, "房数": room_count_idx,
+            "到达": arrival_idx, "离开": departure_idx, "定价": price_idx
+        }
+        missing_headers = [name for name, index in required_indices.items() if index == -1]
+        if missing_headers:
+            return f"错误：表格缺少必要的列标题: {', '.join(missing_headers)}。请确保图片清晰。"
 
         data_rows = table['table_rows'][1:]
         date_groups = {}
@@ -149,11 +158,10 @@ def run_ocr_app_detailed():
             try:
                 room_type = cols[room_type_idx]['text'].strip()
                 room_count = int(cols[room_count_idx]['text'].strip())
-                arrival = cols[arrival_idx]['text'].strip().split(' ')[0].replace('18:00', '').strip()
-                departure = cols[departure_idx]['text'].strip().split(' ')[0].replace('12:00', '').strip()
+                arrival = cols[arrival_idx]['text'].strip().split(' ')[0]
+                departure = cols[departure_idx]['text'].strip().split(' ')[0]
                 price = int(float(cols[price_idx]['text'].strip()))
                 
-                # 清理日期格式
                 arrival = re.sub(r'[^0-9/]', '', arrival)
                 departure = re.sub(r'[^0-9/]', '', departure)
 
@@ -162,7 +170,7 @@ def run_ocr_app_detailed():
                     date_groups[date_key] = []
                 date_groups[date_key].append((room_type.upper(), room_count, price))
             except (ValueError, IndexError):
-                continue # Skip rows with parsing errors
+                continue 
 
         if not date_groups:
             return "错误：未能从表格中解析出任何有效的预定记录。"
@@ -899,10 +907,10 @@ if check_password():
     with st.sidebar:
         app_choice = option_menu(
             menu_title="炼狱金陵/金陵至尊必修剑谱",
-            options=["OCR 工具", "比对平台", "报告分析器", "数据分析"],
-            icons=["camera-reels-fill", "kanban", "clipboard-data", "graph-up-arrow"],
+            options=["OCR 工具", "比对平台", "报告分析器", "数据分析", "话术生成器", "常用话术"],
+            icons=["camera-reels-fill", "kanban", "clipboard-data", "graph-up-arrow", "blockquote-left", "card-text"],
             menu_icon="tools",
-            default_index=3,
+            default_index=0,
         )
 
     st.sidebar.markdown("---")
@@ -916,4 +924,8 @@ if check_password():
         run_analyzer_app()
     elif app_choice == "数据分析":
         run_data_analysis_app()
+    elif app_choice == "话术生成器":
+        run_morning_briefing_app()
+    elif app_choice == "常用话术":
+        run_common_phrases_app()
 
