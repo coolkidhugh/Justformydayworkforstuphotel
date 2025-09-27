@@ -42,7 +42,7 @@ def analyze_reports_ultimate(file_paths):
 
 
 # ==============================================================================
-# --- APP 1: OCR 工具 (双模式 V5 - 界面增强) ---
+# --- APP 1: OCR 工具 (V6 - 三步审核流程) ---
 # ==============================================================================
 def run_ocr_app_detailed():
     """Contains all logic and UI for the Detailed OCR Sales Notification Generator."""
@@ -59,14 +59,13 @@ def run_ocr_app_detailed():
         "VCKN", "VCKD", "SITN", "JEN", "JIS", "JTIN", "SON", "DON"
     ]
 
-    # --- OCR 引擎函数 (使用 RecognizeAdvanced 接口) ---
+    # --- OCR 引擎函数 ---
     def get_ocr_data_from_aliyun(image: Image.Image):
-        # ... (此函数保持不变)
         if not ALIYUN_SDK_AVAILABLE:
-            st.error("错误：阿里云 SDK 未安装。请确保 requirements.txt 文件配置正确。")
+            st.error("错误：阿里云 SDK 未安装。")
             return None
         if "aliyun_credentials" not in st.secrets:
-            st.error("错误：阿里云凭证未在 Streamlit Cloud 的 Secrets 中配置。")
+            st.error("错误：阿里云凭证未在 Secrets 中配置。")
             return None
         access_key_id = st.secrets.aliyun_credentials.get("access_key_id")
         access_key_secret = st.secrets.aliyun_credentials.get("access_key_secret")
@@ -80,8 +79,9 @@ def run_ocr_app_detailed():
             if image.mode == 'RGBA': image = image.convert('RGB')
             image.save(buffered, format="JPEG")
             buffered.seek(0)
-            request = ocr_models.RecognizeAdvancedRequest(body=buffered)
-            response = client.recognize_advanced(request)
+            # [关键修正] 使用通用文字识别接口，稳定性更好
+            request = ocr_models.RecognizeGeneralRequest(body=buffered)
+            response = client.recognize_general(request)
             if response.status_code == 200 and response.body and response.body.data:
                 return json.loads(response.body.data)
             else:
@@ -92,48 +92,33 @@ def run_ocr_app_detailed():
             st.error(f"调用阿里云 OCR API 失败: {e}")
             return None
 
-    # --- [模式一] 从表格结构中提取信息 ---
-    def extract_booking_info_from_table(ocr_data: dict):
-        # ... (此函数保持不变)
-        full_text = ocr_data.get('content', '')
-        tables = ocr_data.get('tables', [])
-        team_name_pattern = re.compile(r'((?:CON|FIT|WA)\d+\s*/\s*[\u4e00-\u9fa5\w]+)', re.IGNORECASE)
-        team_name_match = team_name_pattern.search(full_text)
-        if not team_name_match: return "错误[表格模式]：无法识别出团队名称。"
-        team_name = re.sub(r'\s*/\s*', '/', team_name_match.group(1).strip())
-        team_prefix = team_name[:3].upper()
-        team_type = TEAM_TYPE_MAP.get(team_prefix, DEFAULT_TEAM_TYPE)
-        all_rows = []
-        table_data = tables[0]
-        header = [cell.strip() for cell in table_data.get('header', [])]
-        try:
-            col_indices = {'status': header.index("状态"), 'room_type': header.index("房类"), 'room_count': header.index("房数"), 'arrival': header.index("到达"), 'departure': header.index("离开"), 'price': header.index("定价")}
-        except ValueError as e: return f"错误[表格模式]：表格缺少必要列。请确保表头包含'状态', '房类', '房数', '到达', '离开', '定价'。缺失: {e}"
-        for row in table_data.get('rows', []):
-            if not any(row) or row[col_indices['status']].strip().upper() != 'R': continue
-            try:
-                all_rows.append({'房型': row[col_indices['room_type']].strip().upper(), '房数': int(row[col_indices['room_count']]), '定价': int(float(row[col_indices['price']])), 'arrival_raw': re.search(r'(\d{1,2}/\d{2})', row[col_indices['arrival']]).group(1), 'departure_raw': re.search(r'(\d{1,2}/\d{2})', row[col_indices['departure']]).group(1)})
-            except (ValueError, AttributeError, IndexError): continue
-        if not all_rows: return "错误[表格模式]：未找到状态为 'R' 的有效记录。"
-        df = pd.DataFrame(all_rows)
-        grouped = df.groupby(['arrival_raw', 'departure_raw'])
-        result_groups = [{"arrival_raw": arr, "departure_raw": dep, "dataframe": gdf[['房型', '房数', '定价']].reset_index(drop=True)} for (arr, dep), gdf in grouped]
-        return {"team_name": team_name, "team_type": team_type, "booking_groups": sorted(result_groups, key=lambda x: x['arrival_raw'])}
-
-    # --- [模式二] 后备方案：从纯文本中提取信息 ---
-    def extract_booking_info_from_text(ocr_data: dict):
-        # ... (此函数保持不变)
-        ocr_text = ocr_data.get('content', '')
-        if not ocr_text: return "错误[文本模式]：OCR 内容为空。"
+    # --- 从纯文本中提取信息 ---
+    def extract_booking_info_from_text(ocr_text: str):
+        if not ocr_text: return "错误：文本内容为空。"
         team_name_pattern = re.compile(r'((?:CON|FIT|WA)\d+\s*/\s*[\u4e00-\u9fa5\w]+)', re.IGNORECASE)
         team_name_match = team_name_pattern.search(ocr_text)
-        if not team_name_match: return "错误[文本模式]：无法识别出团队名称。"
+        if not team_name_match: return "错误：无法从文本中识别出团队名称。"
         team_name = re.sub(r'\s*/\s*', '/', team_name_match.group(1).strip())
         team_prefix = team_name[:3].upper()
         team_type = TEAM_TYPE_MAP.get(team_prefix, DEFAULT_TEAM_TYPE)
-        pattern = re.compile(r'\b(' + '|'.join(ALL_ROOM_CODES) + r')\b' r'\s+(\d+)\s+' r'.*?' r'(\d{1,2}/\d{2})' r'.*?' r'(\d{1,2}/\d{2})' r'.*?' r'(\d+\.\d{2})', re.IGNORECASE)
-        matches = pattern.findall(ocr_text)
-        if not matches: return "错误[文本模式]：未能找到任何有效的'房型-日期-价格'组合。"
+        
+        # 匹配所有状态为R的行
+        line_pattern = re.compile(
+            r'^\s*R\s+'                                  # 行必须以 R 开头
+            r'.*?'                                       # 中间任意字符
+            r'\b(' + '|'.join(ALL_ROOM_CODES) + r')\b'   # (组1) 房型
+            r'\s+(\d+)\s+'                               # (组2) 房数
+            r'.*?'                                       # 任意字符
+            r'(\d{1,2}/\d{2})'                           # (组3) 到达日期
+            r'.*?'                                       # 任意字符
+            r'(\d{1,2}/\d{2})'                           # (组4) 离开日期
+            r'.*?'                                       # 任意字符
+            r'(\d+\.\d{2})'                              # (组5) 价格
+            , re.IGNORECASE | re.MULTILINE)
+            
+        matches = line_pattern.findall(ocr_text)
+        if not matches: return "错误：未能从文本中找到任何状态为'R'的有效'房型-房数-日期-价格'组合。"
+
         all_rows = [{"房型": m[0].upper(), "房数": int(m[1]), "定价": int(float(m[4])), "arrival_raw": m[2], "departure_raw": m[3]} for m in matches]
         df = pd.DataFrame(all_rows)
         grouped = df.groupby(['arrival_raw', 'departure_raw'])
@@ -142,7 +127,6 @@ def run_ocr_app_detailed():
 
     # --- 话术生成 ---
     def format_notification_speech(team_name, team_type, booking_groups, salesperson):
-        # ... (此函数保持不变)
         def format_date_range(arr_str, dep_str):
             try:
                 arr_month, arr_day = arr_str.split('/')
@@ -159,48 +143,59 @@ def run_ocr_app_detailed():
         return f"新增{team_type} {team_name} {' '.join(speech_parts)} {salesperson}销售通知"
 
     # --- Streamlit 主应用 ---
-    st.title("金陵工具箱 - OCR 工具 (双模式)")
-    if 'ocr_step' not in st.session_state: st.session_state.ocr_step = 0
+    st.title("金陵工具箱 - OCR 工具")
+    
+    # [关键修改] 使用多步骤流程控制
+    if 'ocr_step' not in st.session_state:
+        st.session_state.ocr_step = 0 # 0: initial, 1: text review, 2: table review
 
     uploaded_file = st.file_uploader("上传图片文件", type=["png", "jpg", "jpeg", "bmp"], key="ocr_uploader_detailed")
 
-    # --- 步骤 0: 上传和处理 ---
-    if uploaded_file and st.session_state.ocr_step == 0:
+    # --- 步骤 0 -> 1: 上传图片并提取原始文本 ---
+    if uploaded_file is not None and st.session_state.ocr_step == 0:
         st.session_state.uploaded_image_bytes = uploaded_file.getvalue()
-        if st.button("1. 从图片提取信息"):
+        if st.button("1. 从图片提取文本"):
             with st.spinner('正在调用阿里云 OCR API...'):
                 ocr_data = get_ocr_data_from_aliyun(Image.open(io.BytesIO(st.session_state.uploaded_image_bytes)))
-                if ocr_data:
-                    st.session_state.raw_ocr_data = ocr_data
-                    result = None
-                    if ocr_data.get('tables'):
-                        st.info("检测到表格结构，使用[表格模式]进行解析。")
-                        result = extract_booking_info_from_table(ocr_data)
-                    else:
-                        st.warning("未检测到清晰的表格结构，自动切换到[后备文本模式]进行解析。")
-                        result = extract_booking_info_from_text(ocr_data)
-                    if isinstance(result, str):
-                        st.error(result)
-                        with st.expander("点击查看原始识别数据"): st.json(ocr_data)
-                    else:
-                        st.session_state.booking_info = result
-                        st.session_state.ocr_step = 1
-                        st.success("信息解析成功！请在下方审核并修正数据。")
-                        # [关键修正] 移除 st.rerun()，让脚本自然向下执行以显示结果
+                if ocr_data and ocr_data.get('content'):
+                    st.session_state.raw_ocr_text = ocr_data.get('content')
+                    st.session_state.ocr_step = 1
+                    st.success("文本提取成功！请在下方核对并编辑。")
                 else:
+                    st.error("OCR 识别失败或未能返回任何文本内容。")
                     st.session_state.ocr_step = 0
-    
-    # --- 步骤 1: 审核和生成 ---
+
+    # --- 步骤 1: 审核和编辑原始文本 ---
     if st.session_state.ocr_step >= 1:
-        if 'uploaded_image_bytes' in st.session_state and st.session_state.uploaded_image_bytes:
-            st.subheader("您上传的图片")
+        st.subheader("第 1 步：审核并编辑识别的原始文本")
+        if 'uploaded_image_bytes' in st.session_state:
             st.image(st.session_state.uploaded_image_bytes, use_container_width=True)
         
+        # [关键修改] 提供一个可编辑的文本框
+        edited_text = st.text_area(
+            "您可以直接在此处修改识别结果，确保每条记录占一行，然后点击解析按钮：",
+            value=st.session_state.get('raw_ocr_text', ''),
+            height=250
+        )
+        # 将编辑后的文本存回 session_state
+        st.session_state.edited_ocr_text = edited_text
+
+        if st.button("2. 从文本解析表格"):
+            result = extract_booking_info_from_text(st.session_state.edited_ocr_text)
+            if isinstance(result, str):
+                st.error(result) # 如果解析失败，显示错误
+            else:
+                st.session_state.booking_info = result
+                st.session_state.ocr_step = 2 # 成功则进入下一步
+                st.success("文本解析成功！请在下方审核最终的结构化表格。")
+
+    # --- 步骤 2: 审核结构化表格并生成话术 ---
+    if st.session_state.ocr_step >= 2:
         st.markdown("---")
-        st.subheader("第 1 步：审核并编辑识别结果")
+        st.subheader("第 2 步：审核结构化表格")
         info = st.session_state.booking_info
         
-        info['team_name'] = st.text_input("团队名称", value=info.get('team_name', ''))
+        info['team_name'] = st.text_input("团队名称", value=info.get('team_name', ''), key="team_name_final")
         
         for i, group in enumerate(info.get('booking_groups', [])):
             st.markdown(f"#### 日期组 {i+1}")
@@ -213,7 +208,7 @@ def run_ocr_app_detailed():
             info['booking_groups'][i]['dataframe'] = edited_df
         
         st.markdown("---")
-        st.subheader("第 2 步：生成最终话术")
+        st.subheader("第 3 步：生成最终话术")
         selected_salesperson = st.selectbox("选择对应销售", options=SALES_LIST)
 
         if st.button("生成最终话术"):
@@ -222,10 +217,13 @@ def run_ocr_app_detailed():
             st.success(final_speech)
             st.code(final_speech, language=None)
 
+    # --- 重置按钮 ---
+    if st.session_state.ocr_step > 0:
         if st.button("返回并上传新图片"):
-            for key in ['ocr_step', 'booking_info', 'raw_ocr_data', 'uploaded_image_bytes']:
+            for key in ['ocr_step', 'booking_info', 'raw_ocr_text', 'edited_ocr_text', 'uploaded_image_bytes']:
                 if key in st.session_state: del st.session_state[key]
             st.rerun()
+
 
 # ==============================================================================
 # --- APP 2: 多维审核比对平台 ---
@@ -907,5 +905,4 @@ if check_password():
         run_morning_briefing_app()
     elif app_choice == "常用话术":
         run_common_phrases_app()
-"
 
