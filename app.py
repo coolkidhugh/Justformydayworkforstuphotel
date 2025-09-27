@@ -928,130 +928,43 @@ def run_common_phrases_app():
 # ==============================================================================
 def run_budget_calculator_app():
     st.title("炼狱金陵/金陵至尊必修剑谱 - 预算计算器")
+    
+    # [关键修正] 去除 OCR 功能，改为纯手动输入
+    st.info("请根据您的预算报表，在下方表格中手动输入对应的百分比数值。")
 
-    # --- OCR 引擎函数 (通用版) ---
-    def get_ocr_text_from_aliyun_general(image: Image.Image) -> str:
-        if not ALIYUN_SDK_AVAILABLE:
-            st.error("错误：阿里云 SDK 未安装。")
-            return None
-        if "aliyun_credentials" not in st.secrets:
-            st.error("错误：阿里云凭证未在 Secrets 中配置。")
-            return None
-        
-        access_key_id = st.secrets.aliyun_credentials.get("access_key_id")
-        access_key_secret = st.secrets.aliyun_credentials.get("access_key_secret")
-        if not access_key_id or not access_key_secret:
-            st.error("错误：阿里云 AccessKey 未在 Secrets 中正确配置。")
-            return None
-            
+    # --- 数据输入表格 ---
+    st.subheader("数据输入")
+    # 创建一个空的 DataFrame，让用户编辑
+    initial_data = {
+        "指标": ["当日实际", "当日预计", "周一预计"],
+        "数值 (%)": [82.0, 80.0, 75.0] # 示例值
+    }
+    input_df = pd.DataFrame(initial_data)
+    
+    # 使用 st.data_editor 让用户可以直接修改表格
+    edited_df = st.data_editor(input_df, key="budget_editor", num_rows="fixed")
+
+    st.subheader("计算结果")
+    if st.button("计算增长率"):
         try:
-            config = open_api_models.Config(
-                access_key_id=access_key_id,
-                access_key_secret=access_key_secret,
-                endpoint='ocr-api.cn-hangzhou.aliyuncs.com'
-            )
-            client = OcrClient(config)
-            buffered = io.BytesIO()
-            if image.mode == 'RGBA': image = image.convert('RGB')
-            image.save(buffered, format="PNG")
-            buffered.seek(0)
-            request = ocr_models.RecognizeGeneralRequest(body=buffered)
-            response = client.recognize_general(request)
-            if response.status_code == 200 and response.body and response.body.data:
-                return json.loads(response.body.data).get('content', '')
-            else:
-                raise Exception(f"阿里云 OCR API 返回错误")
-        except Exception as e:
-            st.error(f"调用阿里云 OCR API 失败: {e}")
-            return None
+            # 从编辑后的表格中提取数值
+            actual = float(edited_df.loc[edited_df['指标'] == '当日实际', '数值 (%)'].iloc[0])
+            forecast = float(edited_df.loc[edited_df['指标'] == '当日预计', '数值 (%)'].iloc[0])
+            monday_forecast = float(edited_df.loc[edited_df['指标'] == '周一预计', '数值 (%)'].iloc[0])
 
-    # --- 百分比提取函数 ---
-    def extract_budget_percentages(text: str):
-        data = {"actual": 0.0, "forecast": 0.0, "monday_forecast": 0.0}
-        percent_pattern = re.compile(r'(\d+\.\d+)%')
-        
-        for line in text.split('\n'):
-            percentages = percent_pattern.findall(line)
-            if not percentages: continue
+            # 计算
+            daily_increase = actual - forecast
+            weekly_increase = actual - monday_forecast
             
-            last_percent = float(percentages[-1])
-            
-            if "当日实际" in line:
-                data["actual"] = last_percent
-            elif "当日预计" in line:
-                data["forecast"] = last_percent
-            elif "周一预计" in line:
-                data["monday_forecast"] = last_percent
-        return data
+            # 使用表格展示结果
+            results_df = pd.DataFrame({
+                "指标": ["当日实际", "当日增加率", "周增加率"],
+                "数值": [f"{actual:.2f}%", f"{daily_increase:.2f}%", f"{weekly_increase:.2f}%"]
+            })
+            st.dataframe(results_df)
 
-    # --- Streamlit UI ---
-    if 'budget_step' not in st.session_state:
-        st.session_state.budget_step = 0
-
-    uploaded_file = st.file_uploader("上传预算截图", type=["png", "jpg", "jpeg"])
-
-    if uploaded_file:
-        if st.button("1. 提取文本"):
-            st.session_state.budget_step = 1
-            with st.spinner("正在识别图片..."):
-                ocr_text = get_ocr_text_from_aliyun_general(Image.open(uploaded_file))
-                if ocr_text:
-                    st.session_state.budget_ocr_text = ocr_text
-                    st.success("文本提取成功！")
-                else:
-                    st.session_state.budget_step = 0
-    
-    if st.session_state.budget_step >= 1:
-        st.subheader("第1步：审核原始文本")
-        edited_text = st.text_area("在此处修正 OCR 结果:", value=st.session_state.get('budget_ocr_text', ''), height=200)
-        st.session_state.edited_budget_text = edited_text
-
-        if st.button("2. 解析数据"):
-            extracted_data = extract_budget_percentages(st.session_state.edited_budget_text)
-            st.session_state.budget_data = extracted_data
-            st.session_state.budget_step = 2
-            st.success("数据解析成功！")
-
-    if st.session_state.budget_step >= 2:
-        st.subheader("第2步：审核数据")
-        data = st.session_state.budget_data
-        
-        col1, col2, col3 = st.columns(3)
-        with col1:
-            actual = st.number_input("当日实际 (%)", value=data.get("actual", 0.0), format="%.2f")
-        with col2:
-            forecast = st.number_input("当日预计 (%)", value=data.get("forecast", 0.0), format="%.2f")
-        with col3:
-            monday_forecast = st.number_input("周一预计 (%)", value=data.get("monday_forecast", 0.0), format="%.2f")
-
-        st.subheader("第3步：计算结果")
-        if st.button("计算"):
-            st.session_state.budget_step = 3
-            st.session_state.final_budget_data = {
-                "actual": actual,
-                "forecast": forecast,
-                "monday_forecast": monday_forecast
-            }
-    
-    if st.session_state.budget_step >= 3:
-        final_data = st.session_state.final_budget_data
-        actual = final_data["actual"]
-        forecast = final_data["forecast"]
-        monday_forecast = final_data["monday_forecast"]
-        
-        daily_increase = actual - forecast
-        weekly_increase = actual - monday_forecast
-        
-        st.markdown("---")
-        st.subheader("最终计算结果")
-        
-        # [关键修正] 使用 DataFrame 展示结果
-        results_df = pd.DataFrame({
-            "指标": ["当日实际", "当日增加率", "周增加率"],
-            "数值": [f"{actual:.2f}%", f"{daily_increase:.2f}%", f"{weekly_increase:.2f}%"]
-        })
-        st.dataframe(results_df)
-
+        except (ValueError, IndexError):
+            st.error("输入的数据格式不正确，请确保'数值 (%)'列只包含数字。")
 
 # ==============================================================================
 # --- 全局函数和主应用路由器 ---
