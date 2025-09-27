@@ -27,7 +27,6 @@ except ImportError:
 def analyze_reports_ultimate(file_paths):
     """
     智能解析并动态定位列，对包含多个团队的Excel报告进行详细统计。
-    (究极体：v7 - 修复团队市场码识别逻辑)
     """
     # --- 楼栋房型代码规则 ---
     jinling_room_types = [
@@ -185,7 +184,7 @@ def analyze_reports_ultimate(file_paths):
     return final_summary_lines, unknown_codes_collection
 
 # ==============================================================================
-# --- APP 1: OCR 工具 (V6 - 三步审核流程) ---
+# --- APP 1: OCR 工具 (V7 - 稳定版) ---
 # ==============================================================================
 def run_ocr_app_detailed():
     """Contains all logic and UI for the Detailed OCR Sales Notification Generator."""
@@ -291,20 +290,26 @@ def run_ocr_app_detailed():
 
     uploaded_file = st.file_uploader("上传图片文件", type=["png", "jpg", "jpeg", "bmp"], key="ocr_uploader_detailed")
 
-    if uploaded_file is not None and st.session_state.ocr_step == 0:
+    # [关键修正] 仅在有新文件上传时更新 session_state
+    if uploaded_file is not None:
         st.session_state.uploaded_image_bytes = uploaded_file.getvalue()
+
+    # --- 步骤 0: 按钮触发 ---
+    if st.session_state.get('uploaded_image_bytes') and st.session_state.ocr_step == 0:
+        st.image(st.session_state.uploaded_image_bytes, use_container_width=True)
         if st.button("1. 从图片提取文本"):
             with st.spinner('正在调用阿里云 OCR API...'):
                 ocr_data = get_ocr_data_from_aliyun(Image.open(io.BytesIO(st.session_state.uploaded_image_bytes)))
                 if ocr_data and ocr_data.get('content'):
                     st.session_state.raw_ocr_text = ocr_data.get('content')
                     st.session_state.ocr_step = 1
-                    st.success("文本提取成功！请在下方核对并编辑。")
+                    st.rerun() # 使用 rerun 清理界面并进入下一步
                 else:
                     st.error("OCR 识别失败或未能返回任何文本内容。")
                     st.session_state.ocr_step = 0
     
-    if st.session_state.ocr_step >= 1:
+    # --- 步骤 1: 审核文本 ---
+    elif st.session_state.ocr_step == 1:
         st.subheader("第 1 步：审核并编辑识别的原始文本")
         if 'uploaded_image_bytes' in st.session_state and st.session_state.uploaded_image_bytes:
             st.image(st.session_state.uploaded_image_bytes, use_container_width=True)
@@ -323,11 +328,14 @@ def run_ocr_app_detailed():
             else:
                 st.session_state.booking_info = result
                 st.session_state.ocr_step = 2
-                st.success("文本解析成功！请在下方审核最终的结构化表格。")
+                st.rerun()
 
-    if st.session_state.ocr_step >= 2:
-        st.markdown("---")
+    # --- 步骤 2: 审核表格并生成 ---
+    elif st.session_state.ocr_step == 2:
         st.subheader("第 2 步：审核结构化表格")
+        if 'uploaded_image_bytes' in st.session_state and st.session_state.uploaded_image_bytes:
+            st.image(st.session_state.uploaded_image_bytes, use_container_width=True)
+
         info = st.session_state.booking_info
         
         info['team_name'] = st.text_input("团队名称", value=info.get('team_name', ''), key="team_name_final")
@@ -352,10 +360,14 @@ def run_ocr_app_detailed():
             st.success(final_speech)
             st.code(final_speech, language=None)
 
+    # --- 重置按钮 ---
     if st.session_state.ocr_step > 0:
         if st.button("返回并上传新图片"):
-            for key in ['ocr_step', 'booking_info', 'raw_ocr_text', 'edited_ocr_text', 'uploaded_image_bytes']:
-                if key in st.session_state: del st.session_state[key]
+            # 清理所有相关状态
+            keys_to_clear = ['ocr_step', 'booking_info', 'raw_ocr_text', 'edited_ocr_text', 'uploaded_image_bytes']
+            for key in keys_to_clear:
+                if key in st.session_state:
+                    del st.session_state[key]
             st.rerun()
 
 
@@ -865,87 +877,94 @@ def run_common_phrases_app():
 
 
 # ==============================================================================
-# --- APP 7: 预算计算器 ---
+# --- APP 7: 每日出租率对照表 ---
 # ==============================================================================
-def run_budget_calculator_app():
-    st.title("金陵工具箱 - 预算计算器")
-    # [关键修正] 增加置顶说明
+def run_daily_occupancy_app():
+    st.title("金陵工具箱 - 每日出租率对照表")
     st.info("计算规则: 当日预计(A), 当日实际(C), 当日增加率(C-A) | 周一预计(E), 当日实际(C), 增加百分率(C-E)")
 
-    st.subheader("数据输入")
-    
-    today = date.today()
-    days = [(today + timedelta(days=i)) for i in range(7)]
-    weekdays_zh = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"]
-    
-    initial_data = {
-        "日期": [d.strftime("%m/%d") for d in days],
-        "星期": [weekdays_zh[d.weekday()] for d in days],
-        "当日预计": [0.0] * 7,
-        "当日实际": [0.0] * 7,
-        "周一预计": [0.0] * 7,
-        "平均房价": [0.0] * 7
-    }
-    input_df = pd.DataFrame(initial_data)
-    
-    st.info("说明：'周一预计'列通常只需要在第一行（周一）填写，计算时会自动应用到后续日期。")
-
-    edited_df = st.data_editor(
-        input_df, 
-        key="budget_editor", 
-        num_rows="fixed",
-        use_container_width=True,
-        column_config={
-            "当日预计": st.column_config.NumberColumn(format="%.2f"),
-            "当日实际": st.column_config.NumberColumn(format="%.2f"),
-            "周一预计": st.column_config.NumberColumn(format="%.2f"),
-            "平均房价": st.column_config.NumberColumn(format="%.2f"),
+    def create_and_display_table(building_name):
+        st.subheader(f"{building_name} - 数据输入")
+        
+        today = date.today()
+        days = [(today + timedelta(days=i)) for i in range(7)]
+        weekdays_zh = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"]
+        
+        initial_data = {
+            "日期": [d.strftime("%m/%d") for d in days],
+            "星期": [weekdays_zh[d.weekday()] for d in days],
+            "当日预计": [0.0] * 7,
+            "当日实际": [0.0] * 7,
+            "周一预计": [0.0] * 7,
+            "平均房价": [0.0] * 7
         }
-    )
+        input_df = pd.DataFrame(initial_data)
+        
+        edited_df = st.data_editor(
+            input_df, 
+            key=f"editor_{building_name}", 
+            num_rows="fixed",
+            use_container_width=True,
+            column_config={
+                "当日预计": st.column_config.NumberColumn(format="%.2f"),
+                "当日实际": st.column_config.NumberColumn(format="%.2f"),
+                "周一预计": st.column_config.NumberColumn(format="%.2f"),
+                "平均房价": st.column_config.NumberColumn(format="%.2f"),
+            }
+        )
+        return edited_df
 
-    st.subheader("计算结果")
+    tabs = st.tabs(["金陵楼", "亚太楼"])
+    with tabs[0]:
+        jl_df = create_and_display_table("金陵楼")
+    with tabs[1]:
+        yt_df = create_and_display_table("亚太楼")
+
+    st.markdown("---")
+    st.header("计算结果")
+
     if st.button("计算并生成报告"):
-        try:
-            result_df = edited_df.copy()
-            numeric_cols = ["当日预计", "当日实际", "周一预计", "平均房价"]
-            for col in numeric_cols:
-                result_df[col] = pd.to_numeric(result_df[col], errors='coerce').fillna(0)
-            
-            monday_forecast_val = result_df['周一预计'].iloc[0]
-            if monday_forecast_val != 0:
-                result_df['周一预计'] = monday_forecast_val
+        for df, name in [(jl_df, "金陵楼"), (yt_df, "亚太楼")]:
+            st.subheader(f"{name} - 计算结果")
+            try:
+                result_df = df.copy()
+                numeric_cols = ["当日预计", "当日实际", "周一预计", "平均房价"]
+                for col in numeric_cols:
+                    result_df[col] = pd.to_numeric(result_df[col], errors='coerce').fillna(0)
+                
+                monday_forecast_val = result_df['周一预计'].iloc[0]
+                if monday_forecast_val != 0:
+                    result_df['周一预计'] = monday_forecast_val
 
-            result_df["当日增加率"] = result_df["当日实际"] - result_df["当日预计"]
-            result_df["增加百分率"] = result_df["当日实际"] - result_df["周一预计"]
-            
-            display_columns = [
-                "日期", "星期", 
-                "当日预计", "当日实际", "当日增加率", 
-                "周一预计", "增加百分率", "平均房价"
-            ]
-            result_df_display = result_df[display_columns].copy()
-            
-            result_df_display.insert(6, '当日实际(用于周比)', result_df['当日实际'])
+                result_df["当日增加率"] = result_df["当日实际"] - result_df["当日预计"]
+                result_df["增加百分率"] = result_df["当日实际"] - result_df["周一预计"]
+                
+                display_columns = [
+                    "日期", "星期", 
+                    "当日预计", "当日实际", "当日增加率", 
+                    "周一预计", "增加百分率", "平均房价"
+                ]
+                result_df_display = result_df[display_columns]
 
-            st.dataframe(result_df_display.style.format({
-                "当日预计": "{:.2f}", "当日实际": "{:.2f}", "当日增加率": "{:+.2f}",
-                "周一预计": "{:.2f}", '当日实际(用于周比)': "{:.2f}", "增加百分率": "{:+.2f}", "平均房价": "{:.2f}"
-            }))
-            
-            st.markdown("---")
-            st.subheader("本周总计")
-            
-            total_actual = result_df['当日实际'].sum()
-            total_forecast = result_df['当日预计'].sum()
-            total_increase = total_actual - total_forecast
-            
-            col1, col2, col3 = st.columns(3)
-            col1.metric("本周实际", f"{total_actual:.2f}")
-            col2.metric("本周预测", f"{total_forecast:.2f}")
-            col3.metric("实际增加", f"{total_increase:+.2f}")
+                st.dataframe(result_df_display.style.format({
+                    "当日预计": "{:.2f}", "当日实际": "{:.2f}", "当日增加率": "{:+.2f}",
+                    "周一预计": "{:.2f}", "增加百分率": "{:+.2f}", "平均房价": "{:.2f}"
+                }))
+                
+                st.markdown("---")
+                st.subheader(f"{name} - 本周总计")
+                
+                total_actual = result_df['当日实际'].sum()
+                total_forecast = result_df['当日预计'].sum()
+                total_increase = total_actual - total_forecast
+                
+                col1, col2, col3 = st.columns(3)
+                col1.metric("本周实际", f"{total_actual:.2f}")
+                col2.metric("本周预测", f"{total_forecast:.2f}")
+                col3.metric("实际增加", f"{total_increase:+.2f}")
 
-        except (ValueError, IndexError, KeyError) as e:
-            st.error(f"计算时发生错误，请检查输入的数据格式是否正确。错误详情: {e}")
+            except (ValueError, IndexError, KeyError) as e:
+                st.error(f"在计算 {name} 数据时发生错误: {e}")
 
 # ==============================================================================
 # --- 全局函数和主应用路由器 ---
@@ -970,7 +989,7 @@ def check_password():
     def password_entered():
         app_username = st.secrets.app_credentials.get("username")
         app_password = st.secrets.app_credentials.get("password")
-        if st.session_state["username"] == app_username and st.session_state["password"] == app_password:
+        if st.session_state.get("username") == app_username and st.session_state.get("password") == app_password:
             st.session_state["password_correct"] = True
             if "password" in st.session_state: del st.session_state["password"]
             if "username" in st.session_state: del st.session_state["username"]
@@ -997,7 +1016,7 @@ if check_password():
     with st.sidebar:
         app_choice = option_menu(
             menu_title="金陵工具箱",
-            options=["OCR 工具", "预算计算器", "比对平台", "团队到店统计", "数据分析", "话术生成器", "常用话术"],
+            options=["OCR 工具", "每日出租率对照表", "比对平台", "团队到店统计", "数据分析", "话术生成器", "常用话术"],
             icons=["camera-reels-fill", "calculator", "kanban", "clipboard-data", "graph-up-arrow", "blockquote-left", "card-text"],
             menu_icon="tools",
             default_index=0,
@@ -1008,8 +1027,8 @@ if check_password():
 
     if app_choice == "OCR 工具":
         run_ocr_app_detailed()
-    elif app_choice == "预算计算器":
-        run_budget_calculator_app()
+    elif app_choice == "每日出租率对照表":
+        run_daily_occupancy_app()
     elif app_choice == "比对平台":
         run_comparison_app()
     elif app_choice == "团队到店统计":
