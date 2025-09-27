@@ -927,7 +927,7 @@ def run_common_phrases_app():
 # --- [新增] APP 7: OCR 预算计算器 ---
 # ==============================================================================
 def run_budget_calculator_app():
-    st.title("炼狱金陵/金陵至尊必修剑谱 - OCR 预算计算器")
+    st.title("炼狱金陵/金陵至尊必修剑谱 - 预算计算器")
 
     # --- OCR 引擎函数 (通用版) ---
     def get_ocr_text_from_aliyun_general(image: Image.Image) -> str:
