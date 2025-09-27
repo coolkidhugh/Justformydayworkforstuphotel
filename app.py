@@ -145,13 +145,11 @@ def run_ocr_app_detailed():
     # --- Streamlit 主应用 ---
     st.title("金陵工具箱 - OCR 工具")
     
-    # [关键修改] 使用多步骤流程控制
     if 'ocr_step' not in st.session_state:
-        st.session_state.ocr_step = 0 # 0: initial, 1: text review, 2: table review
+        st.session_state.ocr_step = 0 
 
     uploaded_file = st.file_uploader("上传图片文件", type=["png", "jpg", "jpeg", "bmp"], key="ocr_uploader_detailed")
 
-    # --- 步骤 0 -> 1: 上传图片并提取原始文本 ---
     if uploaded_file is not None and st.session_state.ocr_step == 0:
         st.session_state.uploaded_image_bytes = uploaded_file.getvalue()
         if st.button("1. 从图片提取文本"):
@@ -164,32 +162,28 @@ def run_ocr_app_detailed():
                 else:
                     st.error("OCR 识别失败或未能返回任何文本内容。")
                     st.session_state.ocr_step = 0
-
-    # --- 步骤 1: 审核和编辑原始文本 ---
+    
     if st.session_state.ocr_step >= 1:
         st.subheader("第 1 步：审核并编辑识别的原始文本")
-        if 'uploaded_image_bytes' in st.session_state:
+        if 'uploaded_image_bytes' in st.session_state and st.session_state.uploaded_image_bytes:
             st.image(st.session_state.uploaded_image_bytes, use_container_width=True)
         
-        # [关键修改] 提供一个可编辑的文本框
         edited_text = st.text_area(
             "您可以直接在此处修改识别结果，确保每条记录占一行，然后点击解析按钮：",
             value=st.session_state.get('raw_ocr_text', ''),
             height=250
         )
-        # 将编辑后的文本存回 session_state
         st.session_state.edited_ocr_text = edited_text
 
         if st.button("2. 从文本解析表格"):
             result = extract_booking_info_from_text(st.session_state.edited_ocr_text)
             if isinstance(result, str):
-                st.error(result) # 如果解析失败，显示错误
+                st.error(result)
             else:
                 st.session_state.booking_info = result
-                st.session_state.ocr_step = 2 # 成功则进入下一步
+                st.session_state.ocr_step = 2
                 st.success("文本解析成功！请在下方审核最终的结构化表格。")
 
-    # --- 步骤 2: 审核结构化表格并生成话术 ---
     if st.session_state.ocr_step >= 2:
         st.markdown("---")
         st.subheader("第 2 步：审核结构化表格")
@@ -217,7 +211,6 @@ def run_ocr_app_detailed():
             st.success(final_speech)
             st.code(final_speech, language=None)
 
-    # --- 重置按钮 ---
     if st.session_state.ocr_step > 0:
         if st.button("返回并上传新图片"):
             for key in ['ocr_step', 'booking_info', 'raw_ocr_text', 'edited_ocr_text', 'uploaded_image_bytes']:
@@ -446,11 +439,10 @@ def run_comparison_app():
             st.dataframe(st.session_state.df2)
 
 # ==============================================================================
-# --- APP 3: Excel 报告分析器 ---
+# --- APP 3: 团队到店统计 ---
 # ==============================================================================
 def run_analyzer_app():
-    """ [关键修正] 完全按照用户提供的代码和期望的输出格式恢复此应用 """
-    st.title("金陵工具箱 - 报告分析器")
+    st.title("📈 团队到店统计")
     st.markdown("---伯爵酒店团队报表分析工具---")
 
     uploaded_files = st.file_uploader("请上传您的 Excel 报告文件 (.xlsx)", type=["xlsx"], accept_multiple_files=True, key="analyzer_uploader")
@@ -458,33 +450,33 @@ def run_analyzer_app():
     if uploaded_files:
         st.subheader("分析结果")
         
+        # Create a temporary directory to save uploaded files
         temp_dir = "./temp_uploaded_files"
-        try:
-            os.makedirs(temp_dir, exist_ok=True)
-        except OSError:
-            pass 
+        os.makedirs(temp_dir, exist_ok=True)
 
         file_paths = []
         for uploaded_file in uploaded_files:
-            try:
-                temp_file_path = os.path.join(temp_dir, uploaded_file.name)
-                with open(temp_file_path, "wb") as f:
-                    f.write(uploaded_file.getbuffer())
-                file_paths.append(temp_file_path)
-            except Exception as e:
-                st.warning(f"无法保存临时文件 {uploaded_file.name}: {e}")
+            # Save the uploaded file to the temporary directory
+            temp_file_path = os.path.join(temp_dir, uploaded_file.name)
+            with open(temp_file_path, "wb") as f:
+                f.write(uploaded_file.getbuffer())
+            file_paths.append(temp_file_path)
 
+        # Define the desired order of keywords
         desired_order = ["次日到达", "次日在住", "次日离店", "后天到达"]
 
+        # Custom sort function
         def sort_key(file_path):
             file_name = os.path.basename(file_path)
             for i, keyword in enumerate(desired_order):
                 if keyword in file_name:
                     return i
-            return len(desired_order) 
+            return len(desired_order) # Files without keywords go to the end
+
+        # Sort the file_paths based on the desired order
         file_paths.sort(key=sort_key)
 
-        if st.button("开始分析"): 
+        if st.button("开始分析"): # Use a button to trigger analysis
             with st.spinner("正在分析中，请稍候..."):
                 summaries, unknown_codes = analyze_reports_ultimate(file_paths)
             
@@ -496,16 +488,10 @@ def run_analyzer_app():
                 for code, count in unknown_codes.items():
                     st.write(f"代码: '{code}' (出现了 {count} 次)")
             
+            # Clean up temporary files and directory
             for f_path in file_paths:
-                try:
-                    os.remove(f_path)
-                except OSError:
-                    pass 
-            try:
-                if os.path.exists(temp_dir) and not os.listdir(temp_dir):
-                    os.rmdir(temp_dir)
-            except OSError:
-                pass
+                os.remove(f_path)
+            os.rmdir(temp_dir)
 
     else:
         st.info("请上传一个或多个 Excel 文件以开始分析。")
@@ -882,7 +868,7 @@ if check_password():
     with st.sidebar:
         app_choice = option_menu(
             menu_title="金陵工具箱",
-            options=["OCR 工具", "预算计算器", "比对平台", "报告分析器", "数据分析", "话术生成器", "常用话术"],
+            options=["OCR 工具", "预算计算器", "比对平台", "团队到店统计", "数据分析", "话术生成器", "常用话术"],
             icons=["camera-reels-fill", "calculator", "kanban", "clipboard-data", "graph-up-arrow", "blockquote-left", "card-text"],
             menu_icon="tools",
             default_index=0,
@@ -897,7 +883,7 @@ if check_password():
         run_budget_calculator_app()
     elif app_choice == "比对平台":
         run_comparison_app()
-    elif app_choice == "报告分析器":
+    elif app_choice == "团队到店统计":
         run_analyzer_app()
     elif app_choice == "数据分析":
         run_data_analysis_app()
