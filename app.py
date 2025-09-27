@@ -562,16 +562,6 @@ def run_analyzer_app():
 # ==============================================================================
 # --- [最终版] APP 4: 酒店入住数据分析应用 ---
 # ==============================================================================
-# [关键修正] 增加 Excel 下载辅助函数
-@st.cache_data
-def to_excel(df_dict):
-    output = io.BytesIO()
-    with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
-        for sheet_name, df in df_dict.items():
-            df.to_excel(writer, sheet_name=sheet_name)
-    processed_data = output.getvalue()
-    return processed_data
-
 @st.cache_data
 def process_data(uploaded_file):
     """
