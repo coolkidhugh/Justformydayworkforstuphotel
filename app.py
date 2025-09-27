@@ -184,187 +184,198 @@ def analyze_reports_ultimate(file_paths):
     return final_summary_lines, unknown_codes_collection
 
 # ==============================================================================
-# --- APP 1: OCR 工具 (V8 - 流程优化版) ---
+# --- APP 1: OCR 工具 (V9 - 全新版) ---
 # ==============================================================================
-def run_ocr_app_detailed():
-    """Contains all logic and UI for the Detailed OCR Sales Notification Generator."""
+def run_ocr_app():
+    """包含了 OCR 销售通知生成器的所有逻辑和 UI。"""
 
     # --- 配置信息 ---
     TEAM_TYPE_MAP = { "CON": "会议团", "FIT": "散客团", "WA": "婚宴团" }
     DEFAULT_TEAM_TYPE = "旅游团"
-    SALES_LIST = ["陈洪贞", "倪斌", "刘亚炜", "黄婷", "蒋思源", "黄泽浩", "蒋光聪", "吴皓宇", "潘茜", "柏方"]
     ALL_ROOM_CODES = [
         "DETN", "DKN", "DQN", "DQS", "DSKN", "DSTN", "DTN", "EKN", "EKS", "ESN", "ESS",
         "ETN", "ETS", "FSN", "FSB", "FSC", "OTN", "PSA", "PSB", "RSN", "SKN",
         "SQN", "SQS", "SSN", "SSS", "STN", "STS", "JDEN", "JDKN", "JDKS", "JEKN",
         "JESN", "JESS", "JETN", "JETS", "JKN", "JLKN", "JTN", "JTS", "PSC", "PSD",
-        "VCKN", "VCKD", "SITN", "JEN", "JIS", "JTIN", "SON", "DON"
+        "VCKN", "VCKD", "SITN", "JEN", "JIS", "JTIN"
     ]
 
-    # --- OCR 引擎函数 ---
-    @st.cache_data(show_spinner=False)
-    def get_ocr_data_from_aliyun(_image_bytes):
-        image = Image.open(io.BytesIO(_image_bytes))
-        # ... (rest of the function is unchanged)
+    # --- OCR 引擎函数 (阿里云版) ---
+    def get_ocr_text_from_aliyun(image: Image.Image) -> str:
         if not ALIYUN_SDK_AVAILABLE:
-            st.error("错误：阿里云 SDK 未安装。")
+            st.error("错误：阿里云 SDK 未安装。请运行 'pip install alibabacloud_ocr_api20210707' 进行安装。")
             return None
+        
         if "aliyun_credentials" not in st.secrets:
-            st.error("错误：阿里云凭证未在 Secrets 中配置。")
+            st.error("错误：阿里云凭证未在 Streamlit 的 Secrets 中配置。请参考代码注释创建 .streamlit/secrets.toml 文件。")
             return None
+        
         access_key_id = st.secrets.aliyun_credentials.get("access_key_id")
         access_key_secret = st.secrets.aliyun_credentials.get("access_key_secret")
+
         if not access_key_id or not access_key_secret:
             st.error("错误：阿里云 AccessKey ID 或 Secret 未在 Secrets 中正确配置。")
             return None
+            
         try:
-            config = open_api_models.Config(access_key_id=access_key_id, access_key_secret=access_key_secret, endpoint='ocr-api.cn-hangzhou.aliyuncs.com')
+            config = open_api_models.Config(
+                access_key_id=access_key_id,
+                access_key_secret=access_key_secret,
+                endpoint='ocr-api.cn-hangzhou.aliyuncs.com'
+            )
             client = OcrClient(config)
+
             buffered = io.BytesIO()
-            if image.mode == 'RGBA': image = image.convert('RGB')
-            image.save(buffered, format="JPEG")
+            if image.mode == 'RGBA':
+                image = image.convert('RGB')
+            
+            image_format = "JPEG"
+            image.save(buffered, format=image_format)
             buffered.seek(0)
+            
             request = ocr_models.RecognizeGeneralRequest(body=buffered)
             response = client.recognize_general(request)
+
             if response.status_code == 200 and response.body and response.body.data:
-                return json.loads(response.body.data)
+                data = json.loads(response.body.data)
+                return data.get('content', '')
             else:
                 error_message = '无详细信息'
-                if response.body and hasattr(response.body, 'message'): error_message = response.body.message
+                if response.body and hasattr(response.body, 'message'):
+                   error_message = response.body.message
                 raise Exception(f"阿里云 OCR API 返回错误: {error_message}")
+
         except Exception as e:
             st.error(f"调用阿里云 OCR API 失败: {e}")
             return None
 
-    # --- 从纯文本中提取信息 ---
-    def extract_booking_info_from_text(ocr_text: str):
-        # ... (function is unchanged)
-        if not ocr_text: return "错误：文本内容为空。"
+    # --- 信息提取与格式化 ---
+    def extract_booking_info(ocr_text: str):
         team_name_pattern = re.compile(r'((?:CON|FIT|WA)\d+\s*/\s*[\u4e00-\u9fa5\w]+)', re.IGNORECASE)
+        date_pattern = re.compile(r'(\d{1,2}/\d{1,2})')
+
         team_name_match = team_name_pattern.search(ocr_text)
-        if not team_name_match: return "错误：无法从文本中识别出团队名称。"
+        if not team_name_match: return "错误：无法识别出团队名称。"
         team_name = re.sub(r'\s*/\s*', '/', team_name_match.group(1).strip())
+
+        all_dates = date_pattern.findall(ocr_text)
+        unique_dates = sorted(list(set(all_dates)))
+        if not unique_dates: return "错误：无法识别出有效的日期。"
+        arrival_date = unique_dates[0]
+        departure_date = unique_dates[-1]
+
+        room_codes_pattern_str = '|'.join(ALL_ROOM_CODES)
+        room_finder_pattern = re.compile(f'({room_codes_pattern_str})\\s*(\\d+)', re.IGNORECASE)
+        price_finder_pattern = re.compile(r'\b(\d+\.\d{2})\b')
+
+        found_rooms = [(m.group(1).upper(), int(m.group(2)), m.span()) for m in room_finder_pattern.finditer(ocr_text)]
+        found_prices = [(float(m.group(1)), m.span()) for m in price_finder_pattern.finditer(ocr_text)]
+
+        room_details = []
+        available_prices = list(found_prices)
+
+        for room_type, num_rooms, room_span in found_rooms:
+            best_price = None
+            best_price_index = -1
+            min_distance = float('inf')
+
+            for i, (price_val, price_span) in enumerate(available_prices):
+                if price_span[0] > room_span[1]:
+                    distance = price_span[0] - room_span[1]
+                    if distance < min_distance:
+                        min_distance = distance
+                        best_price = price_val
+                        best_price_index = i
+            
+            if best_price is not None and best_price > 0:
+                room_details.append((room_type, num_rooms, int(best_price)))
+                if best_price_index != -1:
+                    available_prices.pop(best_price_index)
+
+        if not room_details:
+            return f"提示：找到了团队 {team_name}，但未能自动匹配任何有效的房型和价格。请检查原始文本并手动填写。"
+
         team_prefix = team_name[:3].upper()
         team_type = TEAM_TYPE_MAP.get(team_prefix, DEFAULT_TEAM_TYPE)
-        
-        line_pattern = re.compile(
-            r'^\s*R\s+'                                  
-            r'.*?'                                       
-            r'\b(' + '|'.join(ALL_ROOM_CODES) + r')\b'   
-            r'\s+(\d+)\s+'                               
-            r'.*?'                                       
-            r'(\d{1,2}/\d{2})'                           
-            r'.*?'                                       
-            r'(\d{1,2}/\d{2})'                           
-            r'.*?'                                       
-            r'(\d+\.\d{2})'                              
-            , re.IGNORECASE | re.MULTILINE)
-            
-        matches = line_pattern.findall(ocr_text)
-        if not matches: return "错误：未能从文本中找到任何状态为'R'的有效'房型-房数-日期-价格'组合。"
+        room_details.sort(key=lambda x: x[1])
 
-        all_rows = [{"房型": m[0].upper(), "房数": int(m[1]), "定价": int(float(m[4])), "arrival_raw": m[2], "departure_raw": m[3]} for m in matches]
-        df = pd.DataFrame(all_rows)
-        grouped = df.groupby(['arrival_raw', 'departure_raw'])
-        result_groups = [{"arrival_raw": arr, "departure_raw": dep, "dataframe": gdf[['房型', '房数', '定价']].reset_index(drop=True)} for (arr, dep), gdf in grouped]
-        return {"team_name": team_name, "team_type": team_type, "booking_groups": sorted(result_groups, key=lambda x: x['arrival_raw'])}
+        try:
+            arr_month, arr_day = map(int, arrival_date.split('/'))
+            dep_month, dep_day = map(int, departure_date.split('/'))
+            formatted_arrival = f"{arr_month}月{arr_day}日"
+            formatted_departure = f"{dep_month}月{dep_day}日"
+        except (ValueError, IndexError):
+            return "错误：日期格式无法解析。"
 
-    # --- 话术生成 ---
-    def format_notification_speech(team_name, team_type, booking_groups, salesperson):
-        # ... (function is unchanged)
-        def format_date_range(arr_str, dep_str):
-            try:
-                arr_month, arr_day = arr_str.split('/')
-                dep_month, dep_day = dep_str.split('/')
-                if arr_month == dep_month: return f"{int(arr_month)}.{int(arr_day)}-{int(dep_day)}"
-                return f"{int(arr_month)}.{int(arr_day)}-{int(dep_month)}.{int(dep_day)}"
-            except: return f"{arr_str}-{dep_str}"
-        speech_parts = []
-        for group in booking_groups:
-            date_range_string = format_date_range(group['arrival_raw'], group['departure_raw'])
-            sorted_df = group['dataframe'].sort_values(by='房数', ascending=True)
-            rooms_list = [f"{row['房数']}{row['房型']}({row['定价']})" for _, row in sorted_df.iterrows()]
-            speech_parts.append(f"{date_range_string} {''.join(rooms_list)}")
-        return f"新增{team_type} {team_name} {' '.join(speech_parts)} {salesperson}销售通知"
+        df = pd.DataFrame(room_details, columns=['房型', '房数', '定价'])
+        return {"team_name": team_name, "team_type": team_type, "arrival_date": formatted_arrival, "departure_date": formatted_departure, "room_dataframe": df}
 
-    # --- UI & 流程控制 ---
+    def format_notification_speech(team_name, team_type, arrival_date, departure_date, room_df):
+        date_range_string = f"{arrival_date}至{departure_date}"
+        room_details = room_df.to_dict('records')
+        formatted_rooms = [f"{item['房数']}间{item['房型']}({item['定价']})" for item in room_details]
+        room_string = " ".join(formatted_rooms) if formatted_rooms else "无房间详情"
+        return f"新增{team_type} {team_name} {date_range_string} {room_string}。销售通知"
+
+    # --- Streamlit 主应用 UI ---
     st.title("金陵工具箱 - OCR 工具")
     
-    # 初始化
-    if 'ocr_step' not in st.session_state:
-        st.session_state.ocr_step = 0
+    st.markdown("""
+    **全新工作流**：
+    1.  **上传图片，点击提取**：程序将调用阿里云 OCR 并将**原始识别文本**显示在下方。
+    2.  **自动填充与人工修正**：程序会尝试自动填充结构化信息。您可以**参照原始文本**，直接在表格中修改，确保信息完全准确。
+    3.  **生成话术**：确认无误后，生成最终话术。
+    """)
 
     uploaded_file = st.file_uploader("上传图片文件", type=["png", "jpg", "jpeg", "bmp"], key="ocr_uploader")
 
-    # [关键修正] 彻底重构流程控制，避免因 rerun 导致的 session_state 问题
     if uploaded_file is not None:
-        # 只要有文件，就显示图片
-        image_bytes = uploaded_file.getvalue()
-        st.image(image_bytes, use_container_width=True)
+        image = Image.open(uploaded_file)
+        st.image(image, caption="上传的图片", width=300)
 
-        # 如果还没有识别结果，就显示“提取”按钮
-        if 'raw_ocr_text' not in st.session_state or st.session_state.get('current_file_name') != uploaded_file.name:
-            if st.button("1. 从图片提取文本"):
-                st.session_state.current_file_name = uploaded_file.name
-                with st.spinner('正在调用阿里云 OCR API...'):
-                    ocr_data = get_ocr_data_from_aliyun(image_bytes)
-                    if ocr_data and ocr_data.get('content'):
-                        st.session_state.raw_ocr_text = ocr_data.get('content')
-                        st.rerun() # 拿到结果后刷新一次，显示下面的编辑框
+        if st.button("从图片提取信息 (阿里云 OCR)"):
+            # 清理旧的状态
+            for key in ['raw_ocr_text', 'booking_info']:
+                if key in st.session_state:
+                    del st.session_state[key]
+            
+            with st.spinner('正在调用阿里云 OCR API 识别中...'):
+                ocr_text = get_ocr_text_from_aliyun(image)
+                if ocr_text:
+                    st.session_state['raw_ocr_text'] = ocr_text
+                    result = extract_booking_info(ocr_text)
+                    if isinstance(result, str):
+                        st.warning(f"自动解析提示：{result}")
+                        st.info("请参考下方识别出的原始文本，手动填写信息。")
+                        empty_df = pd.DataFrame(columns=['房型', '房数', '定价'])
+                        st.session_state['booking_info'] = { "team_name": "", "team_type": DEFAULT_TEAM_TYPE, "arrival_date": "", "departure_date": "", "room_dataframe": empty_df }
                     else:
-                        st.error("OCR 识别失败或未能返回任何文本内容。")
-                        # 清理状态以允许重试
-                        if 'raw_ocr_text' in st.session_state:
-                            del st.session_state.raw_ocr_text
+                        st.session_state['booking_info'] = result
+                        st.success("信息提取成功！请在下方核对并编辑。")
+
+    if 'booking_info' in st.session_state:
+        info = st.session_state['booking_info']
+        if 'raw_ocr_text' in st.session_state:
+            st.markdown("---")
+            st.subheader("原始识别结果 (供参考)")
+            st.text_area("您可以从这里复制内容来修正下面的表格", st.session_state['raw_ocr_text'], height=200)
+        st.markdown("---")
+        st.subheader("核对与编辑信息")
+        col1, col2, col3, col4 = st.columns(4)
+        with col1: info['team_name'] = st.text_input("团队名称", value=info['team_name'])
+        with col2: info['team_type'] = st.selectbox("团队类型", options=list(TEAM_TYPE_MAP.values()) + [DEFAULT_TEAM_TYPE], index=(list(TEAM_TYPE_MAP.values()) + [DEFAULT_TEAM_TYPE]).index(info['team_type']))
+        with col3: arrival = st.text_input("到达日期", value=info['arrival_date'])
+        with col4: departure = st.text_input("离开日期", value=info['departure_date'])
         
-        # 如果已经有了识别结果，就显示编辑和解析部分
-        if 'raw_ocr_text' in st.session_state and st.session_state.get('current_file_name') == uploaded_file.name:
-            st.subheader("第 1 步：审核并编辑识别的原始文本")
-            edited_text = st.text_area(
-                "您可以直接在此处修改识别结果：",
-                value=st.session_state.raw_ocr_text,
-                height=250,
-                key="edited_text_area"
-            )
+        st.markdown("##### 房间详情 (可直接在表格中编辑)")
+        edited_df = st.data_editor(info['room_dataframe'], num_rows="dynamic", use_container_width=True)
+        
+        if st.button("生成最终话术"):
+            final_speech = format_notification_speech(info['team_name'], info['team_type'], arrival, departure, edited_df)
+            st.subheader("生成成功！")
+            st.success(final_speech)
+            st.code(final_speech, language=None)
             
-            if st.button("2. 从文本解析表格"):
-                result = extract_booking_info_from_text(edited_text)
-                if isinstance(result, str):
-                    st.error(result)
-                    if 'booking_info' in st.session_state:
-                         del st.session_state['booking_info']
-                else:
-                    st.session_state.booking_info = result
-                    st.success("文本解析成功！请审核下方表格。")
-            
-            # 如果解析成功，显示最终审核表格
-            if 'booking_info' in st.session_state:
-                st.markdown("---")
-                st.subheader("第 2 步：审核结构化表格")
-                info = st.session_state.booking_info
-                
-                info['team_name'] = st.text_input("团队名称", value=info.get('team_name', ''), key="team_name_final")
-                
-                for i, group in enumerate(info.get('booking_groups', [])):
-                    st.markdown(f"#### 日期组 {i+1}")
-                    col1, col2 = st.columns(2)
-                    with col1: info['booking_groups'][i]['arrival_raw'] = st.text_input("到达日期", value=group['arrival_raw'], key=f"arrival_{i}")
-                    with col2: info['booking_groups'][i]['departure_raw'] = st.text_input("离开日期", value=group['departure_raw'], key=f"departure_{i}")
-
-                    edited_df = st.data_editor(group['dataframe'], key=f"editor_{i}", num_rows="dynamic", use_container_width=True,
-                        column_config={"房数": st.column_config.NumberColumn(required=True), "定价": st.column_config.NumberColumn(required=True)})
-                    info['booking_groups'][i]['dataframe'] = edited_df
-                
-                st.markdown("---")
-                st.subheader("第 3 步：生成最终话术")
-                selected_salesperson = st.selectbox("选择对应销售", options=SALES_LIST)
-
-                if st.button("生成最终话术"):
-                    final_speech = format_notification_speech(info['team_name'], info['team_type'], info['booking_groups'], selected_salesperson)
-                    st.subheader("生成成功！")
-                    st.success(final_speech)
-                    st.code(final_speech, language=None)
-
 # ==============================================================================
 # --- APP 2: 多维审核比对平台 ---
 # ==============================================================================
@@ -1027,7 +1038,7 @@ if check_password():
     st.sidebar.info("这是一个将多个工具集成到一起的应用。")
 
     if app_choice == "OCR 工具":
-        run_ocr_app_detailed()
+        run_ocr_app()
     elif app_choice == "每日出租率对照表":
         run_daily_occupancy_app()
     elif app_choice == "比对平台":
