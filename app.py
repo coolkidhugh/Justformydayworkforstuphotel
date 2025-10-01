@@ -766,7 +766,7 @@ def run_data_analysis_app():
         with st.expander("点击展开或折叠", expanded=True):
             default_stay_date = ""
             if not expanded_df.empty and '住店日' in expanded_df.columns:
-                   default_stay_date = pd.to_datetime(expanded_df['住店日'].min()).strftime('%Y/%m/%d')
+                      default_stay_date = pd.to_datetime(expanded_df['住店日'].min()).strftime('%Y/%m/%d')
             stay_dates_str = st.text_input("输入住店日期 (用逗号分隔, 格式: YYYY/MM/DD)", default_stay_date)
             selected_stay_dates = []
             if stay_dates_str:
@@ -979,6 +979,127 @@ def run_daily_occupancy_app():
                 st.error(f"在计算 {name} 数据时发生错误: {e}")
 
 # ==============================================================================
+# --- [新增] APP 8: 携程对日期 ---
+# ==============================================================================
+def run_ctrip_date_comparison_app():
+    st.title("金陵工具箱 - 携程对日期")
+    st.markdown("""
+    此工具用于比对 **系统订单 (System Order)** 和 **携程订单 (Ctrip Order)**。
+    1.  请分别上传两个对应的 Excel 文件。
+    2.  工具会自动识别并统一两种不同的日期格式 (`YYMMDD` 和 `YYYY/MM/DD`)。
+    3.  点击“开始比对”，下方将显示结果摘要，并提供详细报告下载。
+    """)
+
+    # --- 列名配置 ---
+    system_columns = {'id': '预订号', 'checkin': '到达', 'checkout': '离开'}
+    ctrip_columns = {'id': '预定号', 'checkin': '入住日期', 'checkout': '离店日期'}
+
+    # --- 文件上传 ---
+    col1, col2 = st.columns(2)
+    with col1:
+        system_file_uploaded = st.file_uploader("上传您的 System Order (.xlsx)", type=["xlsx"], key="system_uploader")
+    with col2:
+        ctrip_file_uploaded = st.file_uploader("上传您的 Ctrip Order (.xlsx)", type=["xlsx"], key="ctrip_uploader")
+
+    # --- 核心比对逻辑 ---
+    if st.button("开始比对", type="primary", disabled=(not system_file_uploaded or not ctrip_file_uploaded)):
+        
+        @st.cache_data
+        def perform_comparison(system_file, ctrip_file):
+            
+            def clean_data(file_buffer, cols_map, date_format=None):
+                try:
+                    df = pd.read_excel(file_buffer)
+                except Exception as e:
+                    st.error(f"读取文件失败: {e}")
+                    return None
+
+                required_cols = list(cols_map.values())
+                missing_cols = [col for col in required_cols if col not in df.columns]
+                if missing_cols:
+                    st.error(f"上传的文件中缺少以下必需的列: {missing_cols}")
+                    return None
+
+                df_selected = df[required_cols].copy()
+                df_selected.columns = ['预定号', '入住日期', '离店日期']
+                
+                df_selected['预定号'] = df_selected['预定号'].astype(str).str.strip().str.upper()
+                
+                df_selected['入住日期_str'] = df_selected['入住日期'].astype(str)
+                df_selected['离店日期_str'] = df_selected['离店日期'].astype(str)
+
+                if date_format:
+                    df_selected['入住日期'] = pd.to_datetime(df_selected['入住日期_str'], format=date_format, errors='coerce').dt.date
+                    df_selected['离店日期'] = pd.to_datetime(df_selected['离店日期_str'], format=date_format, errors='coerce').dt.date
+                else:
+                    df_selected['入住日期'] = pd.to_datetime(df_selected['入住日期_str'], errors='coerce').dt.date
+                    df_selected['离店日期'] = pd.to_datetime(df_selected['离店日期_str'], errors='coerce').dt.date
+                
+                df_selected.dropna(subset=['预定号', '入住日期', '离店日期'], inplace=True)
+                return df_selected.drop(columns=['入住日期_str', '离店日期_str'])
+
+            with st.spinner("正在处理和比对文件..."):
+                df_system = clean_data(system_file, system_columns, date_format='%y%m%d')
+                df_ctrip = clean_data(ctrip_file, ctrip_columns)
+
+                if df_system is None or df_ctrip is None:
+                    return None # 错误信息已在 clean_data 中显示
+
+                merged_df = pd.merge(
+                    df_system, df_ctrip, on='预定号', how='left', suffixes=('_系统', '_Ctrip')
+                )
+
+                not_found_df = merged_df[merged_df['入住日期_Ctrip'].isnull()].copy()
+                not_found_df = not_found_df[['预定号', '入住日期_系统', '离店日期_系统']]
+
+                found_df = merged_df[merged_df['入住日期_Ctrip'].notnull()].copy()
+                
+                date_mismatch_df = found_df[
+                    (found_df['入住日期_系统'] != found_df['入住日期_Ctrip']) |
+                    (found_df['离店日期_系统'] != found_df['离店日期_Ctrip'])
+                ].copy()
+                date_mismatch_df = date_mismatch_df[['预定号', '入住日期_系统', '离店日期_系统', '入住日期_Ctrip', '离店日期_Ctrip']]
+                
+                return date_mismatch_df, not_found_df
+
+        results = perform_comparison(system_file_uploaded, ctrip_file_uploaded)
+
+        if results:
+            date_mismatch_df, not_found_df = results
+            st.success("比对完成！")
+            
+            st.header("结果摘要")
+            col1, col2 = st.columns(2)
+            col1.metric("⚠️ 日期不匹配的订单", f"{len(date_mismatch_df)} 条")
+            col2.metric("ℹ️ 在携程中未找到的订单", f"{len(not_found_df)} 条")
+
+            # 准备下载文件
+            df_to_download = {
+                "日期不匹配的订单": date_mismatch_df,
+                "在Ctrip中未找到的订单": not_found_df
+            }
+            excel_data = to_excel(df_to_download)
+            st.download_button(
+                label="📥 下载详细比对报告 (.xlsx)",
+                data=excel_data,
+                file_name="携程日期比对报告.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            )
+
+            st.header("结果详情")
+            with st.expander(f"查看 {len(date_mismatch_df)} 条日期不匹配的订单", expanded=True if not date_mismatch_df.empty else False):
+                if not date_mismatch_df.empty:
+                    st.dataframe(date_mismatch_df)
+                else:
+                    st.info("没有发现日期不匹配的订单。")
+            
+            with st.expander(f"查看 {len(not_found_df)} 条在携程中未找到的订单"):
+                if not not_found_df.empty:
+                    st.dataframe(not_found_df)
+                else:
+                    st.info("所有系统订单都能在携程订单中找到。")
+
+# ==============================================================================
 # --- 全局函数和主应用路由器 ---
 # ==============================================================================
 @st.cache_data
@@ -986,7 +1107,7 @@ def to_excel(df_dict):
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
         for sheet_name, df in df_dict.items():
-            df.to_excel(writer, sheet_name=sheet_name)
+            df.to_excel(writer, sheet_name=sheet_name, index=False)
     processed_data = output.getvalue()
     return processed_data
     
@@ -1028,8 +1149,8 @@ if check_password():
     with st.sidebar:
         app_choice = option_menu(
             menu_title="金陵工具箱",
-            options=["OCR 工具", "每日出租率对照表", "比对平台", "团队到店统计", "数据分析", "话术生成器", "常用话术"],
-            icons=["camera-reels-fill", "calculator", "kanban", "clipboard-data", "graph-up-arrow", "blockquote-left", "card-text"],
+            options=["OCR 工具", "每日出租率对照表", "比对平台", "团队到店统计", "携程对日期", "数据分析", "话术生成器", "常用话术"],
+            icons=["camera-reels-fill", "calculator", "kanban", "clipboard-data", "calendar-check", "graph-up-arrow", "blockquote-left", "card-text"],
             menu_icon="tools",
             default_index=0,
         )
@@ -1045,10 +1166,11 @@ if check_password():
         run_comparison_app()
     elif app_choice == "团队到店统计":
         run_analyzer_app()
+    elif app_choice == "携程对日期":
+        run_ctrip_date_comparison_app()
     elif app_choice == "数据分析":
         run_data_analysis_app()
     elif app_choice == "话术生成器":
         run_morning_briefing_app()
     elif app_choice == "常用话术":
         run_common_phrases_app()
-
