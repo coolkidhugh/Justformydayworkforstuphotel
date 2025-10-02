@@ -1,9 +1,10 @@
+streamlit==1.33.0
+pandas
+Pillow
+streamlit-option-menu==0.3.6
+numpy
 alibabacloud_ocr_api20210707
 alibabacloud_tea_openapi
 alibabacloud_tea_util
-pandas
-streamlit==1.33.0
-pillow
 openpyxl
-streamlit-option-menu==0.3.6
 xlsxwriter
