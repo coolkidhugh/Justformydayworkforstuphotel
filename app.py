@@ -10,6 +10,7 @@ import traceback
 from datetime import timedelta, date
 from collections import Counter
 from streamlit_option_menu import option_menu
+import numpy as np
 
 # --- SDK 依赖 ---
 try:
@@ -766,7 +767,7 @@ def run_data_analysis_app():
         with st.expander("点击展开或折叠", expanded=True):
             default_stay_date = ""
             if not expanded_df.empty and '住店日' in expanded_df.columns:
-                      default_stay_date = pd.to_datetime(expanded_df['住店日'].min()).strftime('%Y/%m/%d')
+                        default_stay_date = pd.to_datetime(expanded_df['住店日'].min()).strftime('%Y/%m/%d')
             stay_dates_str = st.text_input("输入住店日期 (用逗号分隔, 格式: YYYY/MM/DD)", default_stay_date)
             selected_stay_dates = []
             if stay_dates_str:
@@ -979,7 +980,7 @@ def run_daily_occupancy_app():
                 st.error(f"在计算 {name} 数据时发生错误: {e}")
 
 # ==============================================================================
-# --- [新增] APP 8: 携程对日期 ---
+# --- APP 8: 携程对日期 ---
 # ==============================================================================
 def run_ctrip_date_comparison_app():
     st.title("金陵工具箱 - 携程对日期")
@@ -1100,6 +1101,125 @@ def run_ctrip_date_comparison_app():
                     st.info("所有系统订单都能在携程订单中找到。")
 
 # ==============================================================================
+# --- [新增] APP 9: 携程审单 ---
+# ==============================================================================
+def run_ctrip_audit_app():
+    st.title("金陵工具箱 - 携程审单")
+    st.markdown("""
+    此工具用于根据 **系统导出的订单** 来审核 **携程订单** 的离店时间和房号。
+    1.  请分别上传 **携程订单Excel** 和 **系统订单Excel**。
+    2.  工具将首先通过 **确认号/预订号** 进行匹配。
+    3.  对于未能匹配的订单，将尝试通过 **客人姓名** 进行二次匹配。
+    4.  最终生成包含 `订单号`, `客人姓名`, `到达`, `离开`, `房号` 的审核结果。
+    """)
+
+    # --- 文件上传 ---
+    col1, col2 = st.columns(2)
+    with col1:
+        ctrip_file_uploaded = st.file_uploader("上传携程订单 (ctrip_orders.xlsx)", type=["xlsx"], key="ctrip_audit_uploader")
+    with col2:
+        system_file_uploaded = st.file_uploader("上传系统订单 (system_orders.xlsx)", type=["xlsx"], key="system_audit_uploader")
+
+    # --- 核心审核逻辑 ---
+    if st.button("开始审核", type="primary", disabled=(not ctrip_file_uploaded or not system_file_uploaded)):
+        
+        @st.cache_data
+        def perform_audit(_ctrip_file_buffer, _system_file_buffer):
+            
+            def clean_confirmation_number(number):
+                """
+                从确认号中提取纯数字。
+                例如 (JLG)1739983531 -> 1739983531
+                """
+                if pd.isna(number):
+                    return None
+                digits = re.findall(r'\d+', str(number))
+                if digits:
+                    return ''.join(digits)
+                return None
+
+            try:
+                # --- 1. 读取上传的文件 ---
+                ctrip_df = pd.read_excel(_ctrip_file_buffer)
+                system_df = pd.read_excel(_system_file_buffer)
+                
+                # --- 2. 检查必需的列 ---
+                required_ctrip_cols = ['订单号', '确认号', '客人姓名', '到达', '离开']
+                required_system_cols = ['预订号', '名字', '离开', '房号']
+
+                missing_ctrip_cols = [col for col in required_ctrip_cols if col not in ctrip_df.columns]
+                if missing_ctrip_cols:
+                    return f"错误: 携程订单文件中缺少必需的列: {', '.join(missing_ctrip_cols)}"
+
+                missing_system_cols = [col for col in required_system_cols if col not in system_df.columns]
+                if missing_system_cols:
+                    return f"错误: 系统订单文件中缺少必需的列: {', '.join(missing_system_cols)}"
+                
+                # --- 3. 数据准备和清洗 ---
+                ctrip_df['匹配的离开时间'] = np.nan
+                ctrip_df['匹配的房号'] = np.nan
+                ctrip_df['纯数字确认号'] = ctrip_df['确认号'].apply(clean_confirmation_number)
+                
+                system_df['预订号'] = system_df['预订号'].astype(str)
+                system_df['名字'] = system_df['名字'].astype(str).str.strip()
+                ctrip_df['客人姓名'] = ctrip_df['客人姓名'].astype(str).str.strip()
+                system_df['is_matched'] = False
+                
+                # --- 4. 第一轮匹配：根据确认号/预订号 ---
+                for i, ctrip_row in ctrip_df.iterrows():
+                    conf_num = ctrip_row['纯数字确认号']
+                    if conf_num:
+                        match = system_df[(system_df['预订号'] == conf_num) & (~system_df['is_matched'])]
+                        if not match.empty:
+                            system_idx = match.index[0]
+                            ctrip_df.at[i, '匹配的离开时间'] = system_df.at[system_idx, '离开']
+                            ctrip_df.at[i, '匹配的房号'] = system_df.at[system_idx, '房号']
+                            system_df.at[system_idx, 'is_matched'] = True
+                
+                # --- 5. 第二轮匹配：根据客人姓名 ---
+                unmatched_ctrip = ctrip_df[ctrip_df['匹配的房号'].isna()]
+                for i, ctrip_row in unmatched_ctrip.iterrows():
+                    guest_name = ctrip_row['客人姓名']
+                    if guest_name:
+                        match = system_df[(system_df['名字'] == guest_name) & (~system_df['is_matched'])]
+                        if not match.empty:
+                            system_idx = match.index[0]
+                            ctrip_df.at[i, '匹配的离开时间'] = system_df.at[system_idx, '离开']
+                            ctrip_df.at[i, '匹配的房号'] = system_df.at[system_idx, '房号']
+                            system_df.at[system_idx, 'is_matched'] = True
+                
+                # --- 6. 生成最终表格 ---
+                if '房号' not in ctrip_df.columns:
+                    ctrip_df['房号'] = np.nan
+                
+                ctrip_df['离开'] = ctrip_df['匹配的离开时间'].where(pd.notna(ctrip_df['匹配的离开时间']), ctrip_df['离开'])
+                ctrip_df['房号'] = ctrip_df['匹配的房号'].where(pd.notna(ctrip_df['匹配的房号']), ctrip_df['房号'])
+                        
+                final_df = ctrip_df[['订单号', '客人姓名', '到达', '离开', '房号']]
+                
+                return final_df
+
+            except Exception as e:
+                return f"处理过程中发生错误: {e}. 请检查文件格式和列名是否正确。"
+
+        with st.spinner("正在执行匹配和审核..."):
+            result = perform_audit(ctrip_file_uploaded, system_file_uploaded)
+
+            if isinstance(result, str):
+                st.error(result)
+            else:
+                st.success("审核完成！")
+                st.dataframe(result)
+                
+                excel_data_audit = to_excel({"审核结果": result})
+                st.download_button(
+                    label="📥 下载审核结果 (.xlsx)",
+                    data=excel_data_audit,
+                    file_name="matched_orders.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                )
+
+# ==============================================================================
 # --- 全局函数和主应用路由器 ---
 # ==============================================================================
 @st.cache_data
@@ -1149,8 +1269,8 @@ if check_password():
     with st.sidebar:
         app_choice = option_menu(
             menu_title="金陵工具箱",
-            options=["OCR 工具", "每日出租率对照表", "比对平台", "团队到店统计", "携程对日期", "数据分析", "话术生成器", "常用话术"],
-            icons=["camera-reels-fill", "calculator", "kanban", "clipboard-data", "calendar-check", "graph-up-arrow", "blockquote-left", "card-text"],
+            options=["OCR 工具", "每日出租率对照表", "比对平台", "团队到店统计", "携程对日期", "携程审单", "数据分析", "话术生成器", "常用话术"],
+            icons=["camera-reels-fill", "calculator", "kanban", "clipboard-data", "calendar-check", "person-check-fill", "graph-up-arrow", "blockquote-left", "card-text"],
             menu_icon="tools",
             default_index=0,
         )
@@ -1168,6 +1288,8 @@ if check_password():
         run_analyzer_app()
     elif app_choice == "携程对日期":
         run_ctrip_date_comparison_app()
+    elif app_choice == "携程审单":
+        run_ctrip_audit_app()
     elif app_choice == "数据分析":
         run_data_analysis_app()
     elif app_choice == "话术生成器":
