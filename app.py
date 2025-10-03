@@ -1143,6 +1143,10 @@ def run_ctrip_audit_app():
                 ctrip_df = pd.read_excel(_ctrip_file_buffer)
                 system_df = pd.read_excel(_system_file_buffer)
                 
+                # --- [新增] 清洗列名，去除前后可能存在的空格 ---
+                ctrip_df.columns = ctrip_df.columns.str.strip()
+                system_df.columns = system_df.columns.str.strip()
+                
                 # --- 2. 检查必需的列 ---
                 required_ctrip_cols = ['订单号', '确认号', '客人姓名', '到达', '离开']
                 required_system_cols = ['预订号', '名字', '离开', '房号']
@@ -1296,3 +1300,4 @@ if check_password():
         run_morning_briefing_app()
     elif app_choice == "常用话术":
         run_common_phrases_app()
+
