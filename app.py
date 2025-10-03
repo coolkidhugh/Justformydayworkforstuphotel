@@ -1,16 +1,16 @@
+import pandas as pd
+import numpy as np
 import re
+import os
 import streamlit as st
 from PIL import Image
-import pandas as pd
 import io
 import json
 import unicodedata
-import os
 import traceback
 from datetime import timedelta, date
 from collections import Counter
 from streamlit_option_menu import option_menu
-import numpy as np
 
 # --- SDK 依赖 ---
 try:
@@ -874,7 +874,10 @@ def run_morning_briefing_app():
         mini_prog_yesterday = st.number_input("小程序订房 - 昨日 (间夜)", key="mp_yest", value=26)
         mini_prog_today = st.number_input("小程序订房 - 今日 (间夜)", key="mp_today", value=19)
     if st.button("生成话术"):
-        briefing = (f"昨日金陵楼出租率{jl_occupancy}%，收入{jl_revenue}元，平均房价{jl_adr}元，总人数{jl_guests}人，金海湾{jl_jinhaiwan}人。" f"亚太商务楼出率{yt_occupancy}%，收入{yt_revenue}元，平均房价{yt_adr}元，总人数{yt_guests}人，家餐厅{yt_jia}人。" f"目前on book出租率金陵楼{onbook_jl}%，亚太商务楼{onbook_yt}%。" f"小程序订房昨日{mini_prog_yesterday}间夜，今日{mini_prog_today}间夜。")
+        briefing = (f"昨日金陵楼出租率{jl_occupancy}%，收入{jl_revenue}元，平均房价{jl_adr}元，总人数{jl_guests}人，金海湾{jl_jinhaiwan}人。"
+                    f"亚太商务楼出率{yt_occupancy}%，收入{yt_revenue}元，平均房价{yt_adr}元，总人数{yt_guests}人，家餐厅{yt_jia}人。"
+                    f"目前on book出租率金陵楼{onbook_jl}%，亚太商务楼{onbook_yt}%。"
+                    f"小程序订房昨日{mini_prog_yesterday}间夜，今日{mini_prog_today}间夜。")
         st.subheader("生成的话术")
         st.success(briefing)
         st.code(briefing)
@@ -1110,62 +1113,72 @@ def run_ctrip_audit_app():
     1.  请分别上传 **携程订单Excel** 和 **系统订单Excel**。
     2.  工具将首先通过 **确认号/预订号** 进行匹配。
     3.  对于未能匹配的订单，将尝试通过 **客人姓名** 进行二次匹配。
-    4.  最终生成包含 `订单号`, `客人姓名`, `到达`, `离开`, `房号` 的审核结果。
+    4.  最终生成包含 `订单号`, `客人姓名`, `到达`, `离开`, `房号`, `状态` 的审核结果。
     """)
 
     # --- 文件上传 ---
     col1, col2 = st.columns(2)
     with col1:
-        ctrip_file_uploaded = st.file_uploader("上传携程订单 (ctrip_orders.xlsx)", type=["xlsx"], key="ctrip_audit_uploader")
+        ctrip_file_uploaded = st.file_uploader("上传携程订单.xlsx", type=["xlsx"], key="ctrip_audit_uploader_v2")
     with col2:
-        system_file_uploaded = st.file_uploader("上传系统订单 (system_orders.xlsx)", type=["xlsx"], key="system_audit_uploader")
+        system_file_uploaded = st.file_uploader("上传系统订单.xlsx", type=["xlsx"], key="system_audit_uploader_v2")
+
+    def clean_confirmation_number_for_app(number):
+        if pd.isna(number):
+            return None
+        digits = re.findall(r'\d+', str(number))
+        if digits:
+            return ''.join(digits)
+        return None
 
     # --- 核心审核逻辑 ---
     if st.button("开始审核", type="primary", disabled=(not ctrip_file_uploaded or not system_file_uploaded)):
         
         @st.cache_data
-        def perform_audit(_ctrip_file_buffer, _system_file_buffer):
-            
-            def clean_confirmation_number(number):
-                """
-                从确认号中提取纯数字。
-                例如 (JLG)1739983531 -> 1739983531
-                """
-                if pd.isna(number):
-                    return None
-                digits = re.findall(r'\d+', str(number))
-                if digits:
-                    return ''.join(digits)
-                return None
-
+        def perform_audit_in_streamlit(_ctrip_buffer, _system_buffer):
             try:
-                # --- 1. 读取上传的文件 ---
-                ctrip_df = pd.read_excel(_ctrip_file_buffer)
-                system_df = pd.read_excel(_system_file_buffer)
-                
-                # --- [新增] 清洗列名，去除前后可能存在的空格 ---
+                # --- 1. 读取Excel文件 ---
+                ctrip_df = pd.read_excel(_ctrip_buffer, dtype={'订单号': str})
+                system_df = pd.read_excel(_system_buffer, dtype={'预订号': str})
+        
+                # --- 清洗列名 ---
                 ctrip_df.columns = ctrip_df.columns.str.strip()
                 system_df.columns = system_df.columns.str.strip()
                 
                 # --- 2. 检查必需的列 ---
                 required_ctrip_cols = ['订单号', '确认号', '客人姓名', '到达', '离开']
-                required_system_cols = ['预订号', '名字', '离开', '房号']
+                required_system_base_cols = ['预订号', '离开', '房号', '状态']
 
                 missing_ctrip_cols = [col for col in required_ctrip_cols if col not in ctrip_df.columns]
                 if missing_ctrip_cols:
                     return f"错误: 携程订单文件中缺少必需的列: {', '.join(missing_ctrip_cols)}"
 
-                missing_system_cols = [col for col in required_system_cols if col not in system_df.columns]
-                if missing_system_cols:
-                    return f"错误: 系统订单文件中缺少必需的列: {', '.join(missing_system_cols)}"
+                missing_system_base_cols = [col for col in required_system_base_cols if col not in system_df.columns]
+                if missing_system_base_cols:
+                    return f"错误: 系统订单文件中缺少必需的列: {', '.join(missing_system_base_cols)}"
+
+                # --- 2a. 动态查找客人姓名列 ---
+                possible_name_cols = ['姓名', '名字', '客人姓名', '宾客姓名']
+                name_col_found = None
+                for col in possible_name_cols:
+                    if col in system_df.columns:
+                        name_col_found = col
+                        break
+                
+                if name_col_found:
+                    if name_col_found != '姓名':
+                        system_df.rename(columns={name_col_found: '姓名'}, inplace=True)
+                else:
+                    return f"错误: 系统订单文件中找不到姓名列。请确保存在名为 '{', '.join(possible_name_cols)}' 中任意一个的列。"
                 
                 # --- 3. 数据准备和清洗 ---
-                ctrip_df['匹配的离开时间'] = np.nan
-                ctrip_df['匹配的房号'] = np.nan
-                ctrip_df['纯数字确认号'] = ctrip_df['确认号'].apply(clean_confirmation_number)
+                ctrip_df['匹配的离开时间'] = pd.Series(dtype='object')
+                ctrip_df['匹配的房号'] = pd.Series(dtype='object')
+                ctrip_df['匹配的状态'] = pd.Series(dtype='object')
+                ctrip_df['纯数字确认号'] = ctrip_df['确认号'].apply(clean_confirmation_number_for_app)
                 
                 system_df['预订号'] = system_df['预订号'].astype(str)
-                system_df['名字'] = system_df['名字'].astype(str).str.strip()
+                system_df['姓名'] = system_df['姓名'].astype(str).str.strip()
                 ctrip_df['客人姓名'] = ctrip_df['客人姓名'].astype(str).str.strip()
                 system_df['is_matched'] = False
                 
@@ -1178,6 +1191,7 @@ def run_ctrip_audit_app():
                             system_idx = match.index[0]
                             ctrip_df.at[i, '匹配的离开时间'] = system_df.at[system_idx, '离开']
                             ctrip_df.at[i, '匹配的房号'] = system_df.at[system_idx, '房号']
+                            ctrip_df.at[i, '匹配的状态'] = system_df.at[system_idx, '状态']
                             system_df.at[system_idx, 'is_matched'] = True
                 
                 # --- 5. 第二轮匹配：根据客人姓名 ---
@@ -1185,29 +1199,33 @@ def run_ctrip_audit_app():
                 for i, ctrip_row in unmatched_ctrip.iterrows():
                     guest_name = ctrip_row['客人姓名']
                     if guest_name:
-                        match = system_df[(system_df['名字'] == guest_name) & (~system_df['is_matched'])]
+                        match = system_df[(system_df['姓名'] == guest_name) & (~system_df['is_matched'])]
                         if not match.empty:
                             system_idx = match.index[0]
                             ctrip_df.at[i, '匹配的离开时间'] = system_df.at[system_idx, '离开']
                             ctrip_df.at[i, '匹配的房号'] = system_df.at[system_idx, '房号']
+                            ctrip_df.at[i, '匹配的状态'] = system_df.at[system_idx, '状态']
                             system_df.at[system_idx, 'is_matched'] = True
                 
                 # --- 6. 生成最终表格 ---
                 if '房号' not in ctrip_df.columns:
                     ctrip_df['房号'] = np.nan
+                if '状态' not in ctrip_df.columns:
+                    ctrip_df['状态'] = np.nan
                 
                 ctrip_df['离开'] = ctrip_df['匹配的离开时间'].where(pd.notna(ctrip_df['匹配的离开时间']), ctrip_df['离开'])
                 ctrip_df['房号'] = ctrip_df['匹配的房号'].where(pd.notna(ctrip_df['匹配的房号']), ctrip_df['房号'])
+                ctrip_df['状态'] = ctrip_df['匹配的状态'].where(pd.notna(ctrip_df['匹配的状态']), ctrip_df['状态'])
                         
-                final_df = ctrip_df[['订单号', '客人姓名', '到达', '离开', '房号']]
+                final_df = ctrip_df[['订单号', '客人姓名', '到达', '离开', '房号', '状态']]
                 
                 return final_df
 
             except Exception as e:
-                return f"处理过程中发生错误: {e}. 请检查文件格式和列名是否正确。"
+                return f"处理过程中发生未知错误: {e}."
 
         with st.spinner("正在执行匹配和审核..."):
-            result = perform_audit(ctrip_file_uploaded, system_file_uploaded)
+            result = perform_audit_in_streamlit(ctrip_file_uploaded, system_file_uploaded)
 
             if isinstance(result, str):
                 st.error(result)
@@ -1222,6 +1240,7 @@ def run_ctrip_audit_app():
                     file_name="matched_orders.xlsx",
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
                 )
+
 
 # ==============================================================================
 # --- 全局函数和主应用路由器 ---
