@@ -1143,10 +1143,12 @@ def run_ctrip_audit_app():
             missing_standard_cols = []
             for standard_name, possible_names in column_map.items():
                 found_col = None
+                # 第一步：尝试精确匹配
                 for name in possible_names:
                     if name in df.columns:
                         found_col = name
                         break
+                # 第二步：如果精确匹配失败，尝试模糊（包含）匹配
                 if not found_col:
                     for name in possible_names:
                         for col in df.columns:
@@ -1167,6 +1169,12 @@ def run_ctrip_audit_app():
             ctrip_df = pd.read_excel(ctrip_buffer, dtype={'订单号': str, '确认号': str})
             system_df = pd.read_excel(system_buffer, dtype={'预订号': str, '第三方预定号': str, '第三方预订号': str})
             
+            # --- [新增] 检查文件是否为空 ---
+            if ctrip_df.empty:
+                return "错误: 上传的携程订单文件为空或格式不正确，无法读取任何数据行。"
+            if system_df.empty:
+                return "错误: 上传的系统订单文件为空或格式不正确，无法读取任何数据行。"
+
             # --- 清洗列名 ---
             ctrip_df.columns = ctrip_df.columns.str.strip()
             system_df.columns = system_df.columns.str.strip()
